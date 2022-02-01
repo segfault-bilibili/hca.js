@@ -14,7 +14,7 @@ class HCA {
     ]);
     private _table = new Uint8Array(0x100);
     private _table1 = new Uint8Array(0x100);
-    verison = "";
+    version = "";
     dataOffset = 0;
     format = {
         channelCount: 0,
@@ -176,7 +176,7 @@ class HCA {
             main: p.getUint8(4),
             sub:  p.getUint8(5)
         }
-        this.verison = version.main + '.' + version.sub;
+        this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
         p = new DataView(hca.buffer, 0, this.dataOffset);
         let ftell = 8;
@@ -265,7 +265,7 @@ class HCA {
             main: p.getUint8(4),
             sub:  p.getUint8(5)
         }
-        this.verison = version.main + '.' + version.sub;
+        this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
         p = new DataView(hca.buffer, 0, this.dataOffset);
         let ftell = 8;
