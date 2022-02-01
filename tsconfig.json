@@ -2,9 +2,12 @@
   "compilerOptions": {
     "target": "es5",
     "module": "commonjs",
-    "lib": ["DOM"],
+    "lib": ["ES5", "DOM"],
     "strict": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
-  }
+  },
+  "files" :[
+    "hca.ts"
+  ]
 }

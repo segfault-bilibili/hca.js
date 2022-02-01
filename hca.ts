@@ -36,9 +36,9 @@ class HCA {
     rva = 0.0;
     comment = "";
 
-    origin = new Uint8Array();
-    decrypted = new Uint8Array();
-    wave = new Uint8Array();
+    origin = new Uint8Array(0);
+    decrypted = new Uint8Array(0);
+    wave = new Uint8Array(0);
     channel: Array<stChannel> = [];
 
     parseKey (key:any) {
@@ -576,7 +576,7 @@ class stChannel {
     scale = new Uint8Array(0x80);
     value2 = new Uint8Array(8);
     type = 0;
-    value3 = new Uint8Array();
+    value3 = new Uint8Array(8);
     count = 0; //uint32
     wav1 = new Float64Array(0x80);
     wav2 = new Float64Array(0x80);
