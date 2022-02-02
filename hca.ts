@@ -339,7 +339,7 @@ class HCA {
         if (this.getSign(new DataView(hca.buffer)) == "HCA\0") {
             this.origin = new Uint8Array(hca);
             if (hca[0] & 0x80 || hca[1] & 0x80 || hca[2] & 0x80) {
-                this.decrypted = this.decrypt(hca);
+                this.decrypted = this.decrypt(hca.slice(0));
             } else {
                 this.decrypted = this.origin;
                 this.info(hca);
