@@ -493,69 +493,14 @@ class HCA {
         for (let l = 0; l < this.format.blockCount; ++l) {
             let startOffset = this.dataOffset + this.blockSize * l;
             let block = hca.subarray(startOffset, startOffset + this.blockSize);
-            let wavebuff = this.decodeBlock(block);
-            // let buff: ArrayBufferLike = new SharedArrayBuffer(0);
-            // let length = 0x400;
-            for (let i = 0; i<8; i++) {
-                for (let j = 0; j<0x80; j++) {
-                    for (let k = 0; k < this.format.channelCount; k++) {
-                        let f = this.channel[k].wave[i][j] * volume;
-                        if (f > 1) f = 1;
-                        else if (f < -1) f = -1;
-                        switch (mode) {
-                            case 8:
-                                p.setUint8(ftell, f * 0x7F + 0x80);
-                                ftell += 1;
-                            break;
-                            case 16:
-                                p.setUint16(ftell, f * 0x7FFF, true);
-                                ftell += 2;
-                            break;
-                            case 24:
-                                f *= 0x7FFFFF;
-                                p.setUint8(ftell    , f       & 0xFF);
-                                p.setUint8(ftell + 1, f >>  8 & 0xFF);
-                                p.setUint8(ftell + 2, f >> 16 & 0xFF);
-                                ftell += 3;
-                            break;
-                            case 32:
-                                p.setUint32(ftell, f * 0x7FFFFFFF, true);
-                                ftell += 4;
-                            break;
-                            case 0:
-                            default:
-                                writer.set(new Uint8Array(new Float32Array([f]).buffer), ftell);
-                                ftell += 4;
-                        }
-                    }
-                }
-            }
-            // switch (mode) {
-            //     case 0:
-            //     default:
-            //         buff = new Float32Array(wavebuff).buffer;
-            //     break;
-            //     case 8:
-            //         buff = new Uint8Array(wavebuff).buffer;
-            //     break;
-            //     case 16:
-            //         buff = new Uint16Array(wavebuff).buffer;
-            //     break;
-            //     // case 24:
-            //     //     buff = new Float32Array(wavebuff).buffer;
-            //     // break;
-            //     case 32:
-            //         buff = new Uint32Array(wavebuff).buffer;
-            //     break;
-            // }
-            // writer.set(new Uint8Array(buff.slice(0, length * fmt.fmtChannelCount)), ftell);
-            // ftell += length * fmt.fmtSamplingSize;
+            let wavebuff = this.decodeBlock(block, mode, volume, writer, ftell);
+            ftell += wavebuff.length;
         }
         this.channel = [];
         return this.wave = writer;
     }
 
-    decodeBlock(block: Uint8Array) {
+    decodeBlock(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) {
         let data = new clData(this.blockSize, block);
         let magic = data.read(16);
         if (magic == 0xFFFF) {
@@ -568,11 +513,49 @@ class HCA {
                 for (let j = 0; j < this.format.channelCount; j++) this.channel[j].Decode5(i);
             }
         }
+        //write decoded data into writer
+        let p = new DataView(writer.buffer);
+        let ftellBegin = ftell;
+        for (let i = 0; i<8; i++) {
+            for (let j = 0; j<0x80; j++) {
+                for (let k = 0; k < this.format.channelCount; k++) {
+                    let f = this.channel[k].wave[i][j] * volume;
+                    if (f > 1) f = 1;
+                    else if (f < -1) f = -1;
+                    switch (mode) {
+                        case 8:
+                            p.setUint8(ftell, f * 0x7F + 0x80);
+                            ftell += 1;
+                        break;
+                        case 16:
+                            p.setUint16(ftell, f * 0x7FFF, true);
+                            ftell += 2;
+                        break;
+                        case 24:
+                            f *= 0x7FFFFF;
+                            p.setUint8(ftell    , f       & 0xFF);
+                            p.setUint8(ftell + 1, f >>  8 & 0xFF);
+                            p.setUint8(ftell + 2, f >> 16 & 0xFF);
+                            ftell += 3;
+                        break;
+                        case 32:
+                            p.setUint32(ftell, f * 0x7FFFFFFF, true);
+                            ftell += 4;
+                        break;
+                        case 0:
+                        default:
+                            writer.set(new Uint8Array(new Float32Array([f]).buffer), ftell);
+                            ftell += 4;
+                    }
+                }
+            }
+        }
+        return new Uint8Array(writer.buffer, ftellBegin, ftell - ftellBegin);
     }
-    decryptAndDecodeBlock(block: Uint8Array) {
+    decryptAndDecodeBlock(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) {
         let decryptedBlock = block.slice(0);
         this.mask(decryptedBlock, 0, this.blockSize - 2);
-        this.decodeBlock(decryptedBlock);
+        return this.decodeBlock(decryptedBlock, mode, volume, writer, ftell);
     }
 }
 
