@@ -189,7 +189,7 @@ class HCA {
                     this.format.samplingRate = p.getUint32(ftell + 4) & 0x00ffffff;
                     this.format.blockCount = p.getUint32(ftell + 8);
                     this.format.muteHeader = p.getUint16(ftell + 12);
-                    this.format.muteHeader = p.getUint16(ftell + 14);
+                    this.format.muteFooter = p.getUint16(ftell + 14);
                     ftell += 16;
                     break;
                 case "comp":
@@ -278,7 +278,7 @@ class HCA {
                     this.format.samplingRate = p.getUint32(ftell + 4) & 0x00ffffff;
                     this.format.blockCount = p.getUint32(ftell + 8);
                     this.format.muteHeader = p.getUint16(ftell + 12);
-                    this.format.muteHeader = p.getUint16(ftell + 14);
+                    this.format.muteFooter = p.getUint16(ftell + 14);
                     ftell += 16;
                     break;
                 case "comp":
