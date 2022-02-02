@@ -491,7 +491,9 @@ class HCA {
             this.channel.push(c);
         }
         for (let l = 0; l < this.format.blockCount; ++l) {
-            let wavebuff = this.decodeBlock(hca, this.dataOffset + this.blockSize * l);
+            let startOffset = this.dataOffset + this.blockSize * l;
+            let block = hca.subarray(startOffset, startOffset + this.blockSize);
+            let wavebuff = this.decodeBlock(block);
             // let buff: ArrayBufferLike = new SharedArrayBuffer(0);
             // let length = 0x400;
             for (let i = 0; i<8; i++) {
@@ -553,8 +555,8 @@ class HCA {
         return this.wave = writer;
     }
 
-    decodeBlock(hca = this.decrypted, address = 0) {
-        let data = new clData(this.blockSize, hca.subarray(address, address + this.blockSize));
+    decodeBlock(block: Uint8Array) {
+        let data = new clData(this.blockSize, block);
         let magic = data.read(16);
         if (magic == 0xFFFF) {
             let a = (data.read(9) << 8) - data.read(7);
@@ -566,6 +568,11 @@ class HCA {
                 for (let j = 0; j < this.format.channelCount; j++) this.channel[j].Decode5(i);
             }
         }
+    }
+    decryptAndDecodeBlock(block: Uint8Array) {
+        let decryptedBlock = block.slice(0);
+        this.mask(decryptedBlock, 0, this.blockSize - 2);
+        this.decodeBlock(decryptedBlock);
     }
 }
 
