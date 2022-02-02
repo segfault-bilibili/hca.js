@@ -28,6 +28,7 @@ class HCA {
     compParam = new Uint8Array(9);
     ath = 0;
     loop = {
+        hasLoop: false,
         start: 0,
         end: 0,
         count: 0
@@ -178,6 +179,7 @@ class HCA {
         }
         this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
+        this.loop.hasLoop = false;
         p = new DataView(hca.buffer, 0, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
@@ -219,6 +221,7 @@ class HCA {
                     ftell += 6;
                     break;
                 case "loop":
+                    this.loop.hasLoop = true;
                     this.loop.start = p.getUint32(ftell + 4);
                     this.loop.end = p.getUint32(ftell + 8);
                     this.loop.count = p.getUint16(ftell + 12);
@@ -267,6 +270,7 @@ class HCA {
         }
         this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
+        this.loop.hasLoop = false;
         p = new DataView(hca.buffer, 0, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
@@ -308,6 +312,7 @@ class HCA {
                     ftell += 6;
                     break;
                 case "loop":
+                    this.loop.hasLoop = true;
                     this.loop.start = p.getUint32(ftell + 4);
                     this.loop.end = p.getUint32(ftell + 8);
                     this.loop.count = p.getUint16(ftell + 12);
@@ -393,6 +398,10 @@ class HCA {
             id: 0x61746164, // data
             size: 0
         }
+        // I see "※計算方法不明" here:
+        // https://github.com/Nyagamon/HCADecoder/blob/e26b4d3a8bb450224ede3527d522c0330f7bf02b/clHCA.cpp#L556
+        // so ... I don't know how to handle this either.
+        // However this "smpl" header section seems to be unrecognized so it shouldn't matter.
         // if (loop) {
             smpl.samplePeriod = (1 / fmt.fmtSamplingRate * 1000000000);
             smpl.loop_Start = this.loop.start * 0x80 * 8 + this.format.muteHeader;
@@ -408,8 +417,20 @@ class HCA {
             note.size = 4 + this.comment.length;
             if (note.size & 3) note.size += 4 - note.size & 3
         }
-        data.size = this.format.blockCount * 0x400 * fmt.fmtSamplingSize + (smpl.loop_End - smpl.loop_Start) * loop;
-        wavRiff.size = 0x1C + ((this.loop && !loop) ? 68 : 0) + (this.comment ? 8 + note.size : 0) + 8 + data.size;
+        // It's so strange that how a value calculated by ※計算方法不明 method could still be used here!?
+        // I'll just comment it out & rewrite it.
+        //data.size = this.format.blockCount * 0x400 * fmt.fmtSamplingSize + (smpl.loop_End - smpl.loop_Start) * loop
+        data.size = this.format.blockCount * 0x400 * fmt.fmtSamplingSize;
+        if (this.loop.hasLoop && loop) {
+            // The file is marked as loop-able AND loop is ENABLED
+            if (this.loop.start > this.loop.end || this.loop.start < 0 || this.loop.end >= this.format.blockCount)
+                throw "invalid loop start/end block index";
+            // The ending block should also be included according to OpenCGSS/DereTore
+            data.size += (this.loop.end + 1 - this.loop.start) * loop * 0x400 * fmt.fmtSamplingSize;
+        }
+        // Note: I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
+        // I think the wav is already looping - just finitely, so maybe such metadata is not needed?
+        wavRiff.size = 0x1C + ((this.loop.hasLoop && !loop) ? 68 : 0) + (this.comment ? 8 + note.size : 0) + 8 + data.size;
         let writer = new Uint8Array(wavRiff.size + 8);
         let p = new DataView(writer.buffer);
         let ftell = 0;
@@ -425,7 +446,8 @@ class HCA {
         p.setUint16(32, fmt.fmtSamplingSize, true);
         p.setUint16(34, fmt.fmtBitCount, true);
         ftell = 36;
-        if (this.loop) {
+        if (this.loop.hasLoop && !loop) {
+            // Note: same as above, I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
             p.setUint32(ftell, smpl.id, true);
             p.setUint32(ftell + 4, smpl.size, true);
             p.setUint32(ftell + 8, smpl.manufacturer, true);
@@ -497,6 +519,17 @@ class HCA {
             ftell += wavebuff.length;
         }
         this.channel = [];
+        if (this.loop.hasLoop && loop) {
+            // copy looping part
+            let wavDataOffset = writer.length - data.size;
+            let wavLoopStartOffset = wavDataOffset + this.loop.start * 0x400 * fmt.fmtSamplingSize;
+            let loopLen = (this.loop.end + 1 - this.loop.start) * 0x400 * fmt.fmtSamplingSize;
+            let src = new Uint8Array(writer.buffer, wavLoopStartOffset, loopLen);
+            for (let i = 1; i <= loop; i++) {
+                let dst = new Uint8Array(writer.buffer, wavLoopStartOffset + i * loopLen, loopLen);
+                dst.set(src);
+            }
+        }
         return this.wave = writer;
     }
 
