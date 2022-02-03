@@ -417,16 +417,34 @@ class HCA {
             note.size = 4 + this.comment.length;
             if (note.size & 3) note.size += 4 - note.size & 3
         }
+        // Assuming each block in HCA has 0x400 samples, calculate corresponding size in WAV file
+        let blockSizeInWav = 0x400 * fmt.fmtSamplingSize;
         // It's so strange that how a value calculated by ※計算方法不明 method could still be used here!?
         // I'll just comment it out & rewrite it.
         //data.size = this.format.blockCount * 0x400 * fmt.fmtSamplingSize + (smpl.loop_End - smpl.loop_Start) * loop
-        data.size = this.format.blockCount * 0x400 * fmt.fmtSamplingSize;
+        data.size = this.format.blockCount * blockSizeInWav;
+        // Calculate mute header/footer sizes and offsets in wav file - I'm not sure whether it's correct either.
+        // Won't affect wav file size if no loop audio clip appended.
+        let muteHeaderOffsetInWavData = this.format.muteHeader * fmt.fmtSamplingSize;
+        let muteFooterOffsetInWavData = this.format.blockCount * blockSizeInWav - this.format.muteFooter * fmt.fmtSamplingSize;
+        let loopStartOffsetInWavData = 0, loopEndOffsetInWavData = 0, loopSizeInWav = 0;
         if (this.loop.hasLoop && loop) {
             // The file is marked as loop-able AND loop is ENABLED
             if (this.loop.start > this.loop.end || this.loop.start < 0 || this.loop.end >= this.format.blockCount)
                 throw "invalid loop start/end block index";
+            // Calculate loop start/end in wav data part - just like above, not sure whether it's correct.
+            loopStartOffsetInWavData = this.loop.start * blockSizeInWav;
+            if (loopStartOffsetInWavData < muteHeaderOffsetInWavData) {
+                loopStartOffsetInWavData = muteHeaderOffsetInWavData; //truncate to muteHeader
+            }
+            loopEndOffsetInWavData = (this.loop.end + 1) * blockSizeInWav;
+            if (loopEndOffsetInWavData > muteFooterOffsetInWavData) {
+                loopEndOffsetInWavData = muteFooterOffsetInWavData; // truncate to muteFooter
+            }
+            loopSizeInWav = loopEndOffsetInWavData - loopStartOffsetInWavData;
+            // Add size of appended looping audio clips
             // The ending block should also be included according to OpenCGSS/DereTore
-            data.size += (this.loop.end + 1 - this.loop.start) * loop * 0x400 * fmt.fmtSamplingSize;
+            data.size += loopSizeInWav * loop;
         }
         // Note: I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
         // I think the wav is already looping - just finitely, so maybe such metadata is not needed?
@@ -520,13 +538,18 @@ class HCA {
         }
         this.channel = [];
         if (this.loop.hasLoop && loop) {
-            // copy looping part
             let wavDataOffset = writer.length - data.size;
-            let wavLoopStartOffset = wavDataOffset + this.loop.start * 0x400 * fmt.fmtSamplingSize;
-            let loopLen = (this.loop.end + 1 - this.loop.start) * 0x400 * fmt.fmtSamplingSize;
-            let src = new Uint8Array(writer.buffer, wavLoopStartOffset, loopLen);
-            for (let i = 1; i <= loop; i++) {
-                let dst = new Uint8Array(writer.buffer, wavLoopStartOffset + i * loopLen, loopLen);
+            // copy "tail"
+            let tailSize = this.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
+            if (tailSize > 0) {
+                let src = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData, tailSize);
+                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + loop * loopSizeInWav, tailSize);
+                dst.set(src);
+            }
+            // copy looping audio clips
+            let src = new Uint8Array(writer.buffer, wavDataOffset + loopStartOffsetInWavData, loopSizeInWav);
+            for (let i = 0; i < loop; i++) {
+                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, loopSizeInWav);
                 dst.set(src);
             }
         }
