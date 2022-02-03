@@ -42,6 +42,12 @@ class HCA {
     wave = new Uint8Array(0);
     channel: Array<stChannel> = [];
 
+    streamBuf = new Uint8Array(0);
+    fedBytes = 0;
+    recycledBytes = 0;
+    fedBlocks = 0;
+    isStreamHCAEncrypted = false;
+
     parseKey (key:any) {
         let buff = new Uint8Array(4);
         try { switch (typeof key) {
@@ -352,6 +358,103 @@ class HCA {
         } else throw "Not a HCA file";
     }
 
+    // streaming support
+    // should never be used after calling whole-file load/decrypt/decode etc
+    feed(snippet: Uint8Array, mode = 32, volume = 1.0) : void {
+        if (this.dataOffset <= 0) {
+            // stage 1: get HCA header size (dataOffset)
+            this.handleStreamFeed(snippet, 8, () => {
+                let p = new DataView(this.streamBuf.buffer);
+                if (this.getSign(p) === "HCA\0") {
+                    let version = {
+                        main: p.getUint8(4),
+                        sub: p.getUint8(5)
+                    };
+                    this.version = version.main + '.' + version.sub;
+                    this.dataOffset = p.getUint16(6);
+                } else {
+                    throw "fed stream is not HCA";
+                }
+            }, () => {
+                if (this.fedBytes >= this.dataOffset) this.feed(new Uint8Array(0), mode, volume);
+            });
+        } else if (this.format.blockCount <= 0) {
+            // stage 2: get full HCA header data
+            this.handleStreamFeed(snippet, this.dataOffset, () => {
+                this.info(this.streamBuf);
+                if (this.format.blockCount <= 0) throw "blockCount is zero or negative";
+                if (this.blockSize <= 0) throw "blockSize is zero or negative";
+                this.initializeDecoder();
+            }, () => {
+                // detect whether this streamed HCA is encrypted
+                if (this.streamBuf[0] & 0x80 || this.streamBuf[1] & 0x80 || this.streamBuf[2] & 0x80) {
+                    this.isStreamHCAEncrypted = true;
+                } else {
+                    this.isStreamHCAEncrypted = false;
+                }
+                // strip HCA header
+                this.streamBuf = this.streamBuf.subarray(this.dataOffset);
+                this.recycledBytes += this.dataOffset;
+                if (this.fedBytes >= this.dataOffset + this.blockSize) {
+                    this.feed(new Uint8Array(0), mode, volume);
+                }
+            });
+        } else if (this.fedBytes + snippet.length <= this.dataOffset + this.format.blockCount * this.blockSize) {
+            // stage 3: get block data
+            this.handleStreamFeed(snippet, this.blockSize, undefined, () => {
+                this.handleStreamBlocks(this.streamBuf, mode, volume);
+            });
+        } else {
+            throw "unexpected data after decoding all blocks";
+        }
+    }
+    private handleStreamFeed(snippet: Uint8Array, readSize: number,
+        peek: Function | undefined, postProc: Function | undefined) : void
+    {
+        if (readSize <= 0) throw "readSize is zero or negative";
+        // enlarge streamBuf to ensure it can hold full data
+        if (this.streamBuf.length < readSize) {
+            let newBuf = new Uint8Array(readSize);
+            if (this.fedBytes > 0) newBuf.set(this.streamBuf);
+            this.streamBuf = newBuf;
+        }
+        if (this.fedBytes - this.recycledBytes + snippet.length < readSize) {
+            // wait for more data
+            this.streamBuf.set(snippet, this.fedBytes);
+            this.fedBytes += snippet.length;
+        } else {
+            if (peek != undefined) {
+                // peek data first
+                this.streamBuf.set(snippet.slice(0, readSize - (this.fedBytes - this.recycledBytes)), this.fedBytes);
+                // not changing fedBytes for now
+                peek();
+            }
+            // no exception thrown during peek
+            // now copy all remaining data
+            let newBuf = new Uint8Array(this.fedBytes - this.recycledBytes + snippet.length);
+            newBuf.set(this.streamBuf);
+            newBuf.set(snippet, this.fedBytes - this.recycledBytes);
+            this.streamBuf = newBuf;
+            this.fedBytes += snippet.length;
+            // Postprocess
+            if (postProc !== undefined) postProc();
+        }
+    }
+    private handleStreamBlocks(blocks: Uint8Array, mode = 32, volume = 1.0) : void {
+        for (let start = 0; this.fedBytes >= this.dataOffset + this.blockSize * (this.fedBlocks + 1); start += this.blockSize, this.fedBlocks++) {
+            let block = blocks.subarray(start, start + this.blockSize);
+            let wavebuff : Uint8Array;
+            if (this.isStreamHCAEncrypted) {
+                this.mask(block, 0, this.blockSize - 2); // in-place decryption
+            }
+            wavebuff = this.decodeBlock(block, mode, volume);
+        }
+        // drop decoded blocks
+        let dropSize = blocks.length - (blocks.length % this.blockSize);
+        this.streamBuf = blocks.slice(dropSize);
+        this.recycledBytes += dropSize;
+    }
+
     decode(hca = this.decrypted, mode = 32, loop = 0, volume = 1.0) {
         let wavRiff = {
             id: 0x46464952, // RIFF
@@ -563,7 +666,19 @@ class HCA {
         }
     }
 
-    decodeBlock(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) {
+    decodeBlock(block: Uint8Array, mode = 32, volume = 1.0,
+        writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined) : Uint8Array
+    {
+        if (writer == undefined) {
+            switch (mode) {
+                case 8: case 16: case 24: case 32:
+                    break;
+                case 0: default:
+                    mode = 32;
+            }
+            writer = new Uint8Array(0x400 * this.format.channelCount * mode / 8);
+        }
+        if (ftell == undefined) ftell = 0;
         let data = new clData(this.blockSize, block);
         let magic = data.read(16);
         if (magic == 0xFFFF) {
@@ -614,11 +729,6 @@ class HCA {
             }
         }
         return new Uint8Array(writer.buffer, ftellBegin, ftell - ftellBegin);
-    }
-    decryptAndDecodeBlock(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) {
-        let decryptedBlock = block.slice(0);
-        this.mask(decryptedBlock, 0, this.blockSize - 2);
-        return this.decodeBlock(decryptedBlock, mode, volume, writer, ftell);
     }
 }
 
