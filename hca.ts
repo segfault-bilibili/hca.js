@@ -434,14 +434,18 @@ class HCA {
                 throw "invalid loop start/end block index";
             // Calculate loop start/end in wav data part - just like above, not sure whether it's correct.
             loopStartOffsetInWavData = this.loop.start * blockSizeInWav;
+            /* Haven't seen any evidence about what mute header/footer means, comment out for now.
             if (loopStartOffsetInWavData < muteHeaderOffsetInWavData) {
                 loopStartOffsetInWavData = muteHeaderOffsetInWavData; //truncate to muteHeader
             }
+            */
             // Once thought the loop end block should also be included, maybe that's incorrect.
             loopEndOffsetInWavData = this.loop.end * blockSizeInWav;
+            /* Same as above, comment out.
             if (loopEndOffsetInWavData > muteFooterOffsetInWavData) {
                 loopEndOffsetInWavData = muteFooterOffsetInWavData; // truncate to muteFooter
             }
+            */
             loopSizeInWav = loopEndOffsetInWavData - loopStartOffsetInWavData;
             // Add size of appended looping audio clips
             data.size += loopSizeInWav * loop;
