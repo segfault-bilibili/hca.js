@@ -437,13 +437,13 @@ class HCA {
             if (loopStartOffsetInWavData < muteHeaderOffsetInWavData) {
                 loopStartOffsetInWavData = muteHeaderOffsetInWavData; //truncate to muteHeader
             }
-            loopEndOffsetInWavData = (this.loop.end + 1) * blockSizeInWav;
+            // Once thought the loop end block should also be included, maybe that's incorrect.
+            loopEndOffsetInWavData = this.loop.end * blockSizeInWav;
             if (loopEndOffsetInWavData > muteFooterOffsetInWavData) {
                 loopEndOffsetInWavData = muteFooterOffsetInWavData; // truncate to muteFooter
             }
             loopSizeInWav = loopEndOffsetInWavData - loopStartOffsetInWavData;
             // Add size of appended looping audio clips
-            // The ending block should also be included according to OpenCGSS/DereTore
             data.size += loopSizeInWav * loop;
         }
         // Note: I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
