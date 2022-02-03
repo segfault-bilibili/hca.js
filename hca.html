@@ -1,18 +1,111 @@
+<!DOCTYPE html>
 <html>
 <head></head>
 <body>
-    <audio id="audio" controls></audio>
+    <h1>HCA decoder demo</h1>
+    <hr>
+    <h3>Choose a HCA file</h3>
+    key1=<input type="text" id="key1input" value="0x01395C51"><br>
+    key2=<input type="text" id="key2input" value="0x00000000"><br>
+    <i>Note: decryption process will be skipped if the HCA is not encrypted.</i><br>
+    <input type="file" id="hcainput" accept=".hca" onchange="handleFile(this.files)"><br>
+    Or <button id="downloadbtn" onclick="download()">download</button> from URL: <input type="text" id="urlinput" value="bgm01_anime02_hca.hca"><br>
+    <hr>
+    <!--
+    <h3>Streamed decoding & play (through <i>experimental</i> Media Source Extensions API)</h3>
+    <input type="checkbox" id="loopflaginput" checked label="looplabel"><label for="looplabel">Loop</label><br>
+    <button disabled id="playbtn" onclick="play()">Play</button><br>
+    <audio id="stream_audio" controls></audio><br>
+    <br>
+    <hr>
+    -->
+    <h3>Decode the whole file</h3>
+    (Extra) loop count: <input type="number" step="1" min="0" max="99" placeholder="0-99" id="loopcountinput" value="0"><br>
+    <i>Note: loop count is ignored if HCA header doesn't have loop section</i><br>
+    <button disabled id="decodebtn" onclick="decodeWhole()">Decode</button><br>
+    <audio id="whole_audio" controls></audio>
     <!-- <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.8.3/dist/ffmpeg.min.js"></script> -->
     <script src="hca.js"></script>
     <script>
-        hca = new HCA();
-        fetch("bgm01_anime02_hca.hca").then((res) => {
-            res.arrayBuffer().then((ab) => {
-                hca.load(new Uint8Array(ab));
-                const stream = hca.decode(hca.decrypted, 16);
-                audio.src = URL.createObjectURL(new Blob([stream], {type : 'audio/x-wav'}));
-            })
-        })
+        var t = new Date().getTime();
+        function logTime(msg) {
+            if (msg == null) msg = "";
+            let c = new Date().getTime();
+            console.log(msg + " took " + (c - t) + " ms");
+            t = c;
+        }
+
+        var hcabuf = null;
+
+        var decodebtn = document.getElementById("decodebtn");
+        var downloadbtn = document.getElementById("downloadbtn");
+
+        function handleFile(files) {
+            hcabuf = null;
+            whole_audio.src = "";
+            if (files.length == 1) files[0].arrayBuffer().then((ab) => hcabuf = ab);
+            decodebtn.disabled = files.length != 1;
+        }
+
+        function download() {
+            downloadbtn.disabled = true;
+            downloadbtn.textContent = "downloading...";
+            hcabuf = null;
+            whole_audio.src = "";
+            decodebtn.disabled = true;
+            let url = document.getElementById("urlinput").value;
+            if (url !== "") fetch(url).then((res) => {
+                if (res.status == 200) {
+                    res.arrayBuffer().then((ab) => {
+                        hcabuf = ab;
+                        decodebtn.disabled = false;
+                        downloadbtn.textContent = "download (successful)";
+                        downloadbtn.disabled = false;
+                    });
+                } else throw "download failed, status " + res.status;
+            }).catch((e) => {
+                console.error(e);
+                downloadbtn.textContent = "download (failed)";
+                downloadbtn.disabled = false;
+            });
+        }
+
+        /*
+        var audioCtx = null;
+        function play() {
+            if (!audioCtx) {
+                let AudioContext = window.AudioContext;// || window.webkitAudioContext;
+                audioCtx = new AudioContext();
+            }
+
+            let key1 = document.getElementById("key1input").value;
+            let key2 = document.getElementById("key2input").value;
+            t = new Date().getTime();
+            let hca = new HCA(key1, key2);
+            logTime("new hca");
+            let loopFlag = document.getElementById("loopflaginput").checked;
+            hca.play(new Uint8Array(hcabuf), loopFlag, audioCtx);
+            console.log("Started playing");
+        }
+        */
+
+        function decodeWhole() {
+            let key1 = document.getElementById("key1input").value;
+            let key2 = document.getElementById("key2input").value;
+            let loop = parseInt(document.getElementById("loopcountinput").value);
+            if (isNaN(loop) || loop < 0 || loop > 99) {
+                loop = 0;
+                document.getElementById("loopcountinput").value = 0;
+            }
+            t = new Date().getTime();
+            let hca = new HCA(key1, key2);
+            logTime("new hca");
+            hca.load(new Uint8Array(hcabuf));
+            logTime("load & decrypt");
+            const stream = hca.decode(hca.decrypted, 16, loop, 1.0);
+            logTime("decode");
+            whole_audio.src = URL.createObjectURL(new Blob([stream], {type : 'audio/x-wav'}));
+        }
     </script>
 </body>
 </html>
