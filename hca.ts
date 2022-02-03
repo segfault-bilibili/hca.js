@@ -499,6 +499,33 @@ class HCA {
         p.setUint32(ftell, data.id, true);
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
+        this.initializeDecoder();
+        for (let l = 0; l < this.format.blockCount; ++l) {
+            let startOffset = this.dataOffset + this.blockSize * l;
+            let block = hca.subarray(startOffset, startOffset + this.blockSize);
+            let wavebuff = this.decodeBlock(block, mode, volume, writer, ftell);
+            ftell += wavebuff.length;
+        }
+        this.channel = [];
+        if (this.loop.hasLoop && loop) {
+            let wavDataOffset = writer.length - data.size;
+            // copy "tail"
+            let tailSize = this.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
+            if (tailSize > 0) {
+                let src = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData, tailSize);
+                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + loop * loopSizeInWav, tailSize);
+                dst.set(src);
+            }
+            // copy looping audio clips
+            let src = new Uint8Array(writer.buffer, wavDataOffset + loopStartOffsetInWavData, loopSizeInWav);
+            for (let i = 0; i < loop; i++) {
+                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, loopSizeInWav);
+                dst.set(src);
+            }
+        }
+        return this.wave = writer;
+    }
+    initializeDecoder() {
         let r = new Uint8Array(0x10);
         let b = Math.floor(this.format.channelCount / this.compParam[2]);
         if (this.compParam[6] && b > 1) {
@@ -534,30 +561,6 @@ class HCA {
             c.count = this.compParam[5] + (r[i] != 2 ? this.compParam[6] : 0);
             this.channel.push(c);
         }
-        for (let l = 0; l < this.format.blockCount; ++l) {
-            let startOffset = this.dataOffset + this.blockSize * l;
-            let block = hca.subarray(startOffset, startOffset + this.blockSize);
-            let wavebuff = this.decodeBlock(block, mode, volume, writer, ftell);
-            ftell += wavebuff.length;
-        }
-        this.channel = [];
-        if (this.loop.hasLoop && loop) {
-            let wavDataOffset = writer.length - data.size;
-            // copy "tail"
-            let tailSize = this.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
-            if (tailSize > 0) {
-                let src = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData, tailSize);
-                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + loop * loopSizeInWav, tailSize);
-                dst.set(src);
-            }
-            // copy looping audio clips
-            let src = new Uint8Array(writer.buffer, wavDataOffset + loopStartOffsetInWavData, loopSizeInWav);
-            for (let i = 0; i < loop; i++) {
-                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, loopSizeInWav);
-                dst.set(src);
-            }
-        }
-        return this.wave = writer;
     }
 
     decodeBlock(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) {
