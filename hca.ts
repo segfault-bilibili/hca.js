@@ -42,7 +42,7 @@ class HCA {
     wave = new Uint8Array(0);
     channel: Array<stChannel> = [];
 
-    streamBuf = new Uint8Array(0);
+    streamHCA = new Uint8Array(0);
     fedBytes = 0;
     recycledBytes = 0;
     fedBlocks = 0;
@@ -364,7 +364,7 @@ class HCA {
         if (this.dataOffset <= 0) {
             // stage 1: get HCA header size (dataOffset)
             this.handleStreamFeed(snippet, 8, () => {
-                let p = new DataView(this.streamBuf.buffer);
+                let p = new DataView(this.streamHCA.buffer);
                 if (this.getSign(p) === "HCA\0") {
                     let version = {
                         main: p.getUint8(4),
@@ -383,19 +383,19 @@ class HCA {
         } else if (this.format.blockCount <= 0) {
             // stage 2: get full HCA header data
             this.handleStreamFeed(snippet, this.dataOffset, () => {
-                this.info(this.streamBuf);
+                this.info(this.streamHCA);
                 if (this.format.blockCount <= 0) throw "blockCount is zero or negative";
                 if (this.blockSize <= 0) throw "blockSize is zero or negative";
                 this.initializeDecoder();
             }, () => {
                 // detect whether this streamed HCA is encrypted
-                if (this.streamBuf[0] & 0x80 || this.streamBuf[1] & 0x80 || this.streamBuf[2] & 0x80) {
+                if (this.streamHCA[0] & 0x80 || this.streamHCA[1] & 0x80 || this.streamHCA[2] & 0x80) {
                     this.isStreamHCAEncrypted = true;
                 } else {
                     this.isStreamHCAEncrypted = false;
                 }
                 // strip HCA header
-                this.streamBuf = this.streamBuf.subarray(this.dataOffset);
+                this.streamHCA = this.streamHCA.subarray(this.dataOffset);
                 this.recycledBytes += this.dataOffset;
                 if (this.fedBytes >= this.dataOffset + this.blockSize) {
                     this.feed(new Uint8Array(0), mode, volume);
@@ -404,7 +404,7 @@ class HCA {
         } else if (this.fedBytes + snippet.length <= this.dataOffset + this.format.blockCount * this.blockSize) {
             // stage 3: get block data
             this.handleStreamFeed(snippet, this.blockSize, undefined, () => {
-                this.handleStreamBlocks(this.streamBuf, mode, volume);
+                this.handleStreamBlocks(this.streamHCA, mode, volume);
             });
         } else {
             throw "unexpected data after decoding all blocks";
@@ -414,29 +414,29 @@ class HCA {
         peek: Function | undefined, postProc: Function | undefined) : void
     {
         if (readSize <= 0) throw "readSize is zero or negative";
-        // enlarge streamBuf to ensure it can hold full data
-        if (this.streamBuf.length < readSize) {
+        // enlarge streamHCA to ensure it can hold full data
+        if (this.streamHCA.length < readSize) {
             let newBuf = new Uint8Array(readSize);
-            if (this.fedBytes > 0) newBuf.set(this.streamBuf);
-            this.streamBuf = newBuf;
+            if (this.fedBytes > 0) newBuf.set(this.streamHCA);
+            this.streamHCA = newBuf;
         }
         if (this.fedBytes - this.recycledBytes + snippet.length < readSize) {
             // wait for more data
-            this.streamBuf.set(snippet, this.fedBytes);
+            this.streamHCA.set(snippet, this.fedBytes);
             this.fedBytes += snippet.length;
         } else {
             if (peek != undefined) {
                 // peek data first
-                this.streamBuf.set(snippet.slice(0, readSize - (this.fedBytes - this.recycledBytes)), this.fedBytes);
+                this.streamHCA.set(snippet.slice(0, readSize - (this.fedBytes - this.recycledBytes)), this.fedBytes);
                 // not changing fedBytes for now
                 peek();
             }
             // no exception thrown during peek
             // now copy all remaining data
             let newBuf = new Uint8Array(this.fedBytes - this.recycledBytes + snippet.length);
-            newBuf.set(this.streamBuf);
+            newBuf.set(this.streamHCA);
             newBuf.set(snippet, this.fedBytes - this.recycledBytes);
-            this.streamBuf = newBuf;
+            this.streamHCA = newBuf;
             this.fedBytes += snippet.length;
             // Postprocess
             if (postProc !== undefined) postProc();
@@ -453,7 +453,7 @@ class HCA {
         }
         // drop decoded blocks
         let dropSize = blocks.length - (blocks.length % this.blockSize);
-        this.streamBuf = blocks.slice(dropSize);
+        this.streamHCA = blocks.slice(dropSize);
         this.recycledBytes += dropSize;
     }
 
