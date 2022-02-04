@@ -372,6 +372,8 @@ class HCA {
                     };
                     this.version = version.main + '.' + version.sub;
                     this.dataOffset = p.getUint16(6);
+                    if (this.dataOffset <= 0) throw "dataOffset is zero or negative";
+                    if (!(this.dataOffset <= 0x1000000)) throw "dataOffset is too large (>16M)";
                 } else {
                     throw "fed stream is not HCA";
                 }
