@@ -5,11 +5,11 @@
     <h1>HCA decoder demo</h1>
     <hr>
     <h3>Choose a HCA file</h3>
-    key1=<input type="text" id="key1input" value="0x01395C51"><br>
-    key2=<input type="text" id="key2input" value="0x00000000"><br>
+    key1=<input type="text" spellcheck="false" id="key1input" value="0x01395C51"><br>
+    key2=<input type="text" spellcheck="false" id="key2input" value="0x00000000"><br>
     <i>Note: decryption process will be skipped if the HCA is not encrypted.</i><br>
     <input type="file" id="hcainput" accept=".hca" onchange="handleFile(this.files)"><br>
-    Or <button id="downloadbtn" onclick="download()">download</button> from URL: <input type="text" id="urlinput" value="bgm01_anime02_hca.hca"><br>
+    Or <button id="downloadbtn" onclick="download()">download</button> from URL: <input type="text" spellcheck="false" id="urlinput" value="bgm01_anime02_hca.hca"><br>
     <hr>
     <!--
     <h3>Streamed decoding & play (through <i>experimental</i> Media Source Extensions API)</h3>
