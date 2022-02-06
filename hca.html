@@ -23,7 +23,7 @@
     (Extra) loop count: <input type="number" step="1" min="0" max="99" placeholder="0-99" id="loopcountinput" value="0"><br>
     <i>Note: loop count is ignored if HCA header doesn't have loop section</i><br>
     <button disabled id="decodeinworkerbtn" onclick="decodeWholeInWorker()">Decode (in background)</button><br>
-    <audio id="whole_audio" controls></audio>
+    <audio id="whole_audio" controls></audio><br>
     <!-- <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.8.3/dist/ffmpeg.min.js"></script> -->
     <script src="hca.js"></script>
     <script>
@@ -122,7 +122,7 @@
                     a.setAttribute("download", id.replace("HCALink", ".hca"));
                     a.setAttribute("href", URL.createObjectURL(new Blob([result[id.replace("HCALink", "")]], {type : 'application/octet-stream'})));
                     a.innerHTML = id.replace("HCALink", " HCA");
-                    let refNode = decodeinworkerbtn.nextSibling;
+                    let refNode = whole_audio.nextSibling;
                     document.body.insertBefore(document.createElement("br"), refNode);
                     document.body.insertBefore(a, refNode);
                 });
