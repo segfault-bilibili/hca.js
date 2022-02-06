@@ -1269,9 +1269,7 @@ if (typeof document === "undefined") {
         }
         tock(text = "") : void {
             this.sendCmd("nop", [], () => {
-                let t = new Date().getTime();
-                console.log(`${text} took ${t - this.lastTick} ms`);
-                this.lastTick = t;
+                console.log(`${text} took ${new Date().getTime() - this.lastTick} ms`);
             });
         }
         constructor (hcaworker : Worker, errHandlerCallback : Function, key1:any = null, key2:any = 0) {

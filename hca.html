@@ -109,8 +109,10 @@
             hcaworkerctrl.tick();
             hcaworkerctrl.load(new Uint8Array(hcabuf));
             hcaworkerctrl.tock("load & decrypt");
+            hcaworkerctrl.tick();
             hcaworkerctrl.decode(undefined, 16, loop, 1.0);
             hcaworkerctrl.tock("decode");
+            hcaworkerctrl.tick();
             hcaworkerctrl.getData(["isWholeHCAEncrypted", "origin", "decrypted", "wholeDecodedWAV"], (result) => {
                 whole_audio.src = URL.createObjectURL(new Blob([result.wholeDecodedWAV], {type : 'audio/x-wav'}));
                 donwHCAIds.forEach((id) => {
