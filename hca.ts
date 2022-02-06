@@ -460,7 +460,8 @@ class HCA {
         this.recycledBytes += dropSize;
     }
 
-    decode(hca = this.decrypted, mode = 32, loop = 0, volume = 1.0) {
+    decode(hca : Uint8Array | undefined = this.decrypted, mode = 32, loop = 0, volume = 1.0) : Uint8Array {
+        if (hca == undefined) hca = this.decrypted;
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
@@ -1148,4 +1149,31 @@ class clData{
         this._bit += bitSize;
     }
     seek = this.AddBit;
+}
+
+
+// web workers support
+var hcainst : HCA = new HCA();
+function handleMsg (msg : MessageEvent) {
+    switch (msg.data.cmd) {
+        case "parseKey":
+            hcainst = new HCA(msg.data.args[0], msg.data.args[1]);
+            return;
+        case "load":
+            hcainst.load(msg.data.args[0]);
+            return;
+        case "decode":
+            return hcainst.decode.apply(hcainst, msg.data.args);
+        case "isWholeHCAEncrypted":
+            return hcainst.isWholeHCAEncrypted;
+        case "origin":
+            return hcainst.origin;
+        case "decrypted":
+            return hcainst.decrypted;
+        default:
+            throw "unknown cmd";
+    }
+}
+onmessage = function (msg : MessageEvent) {
+    this.postMessage({cmd: msg.data.cmd, result: handleMsg(msg)});
 }
