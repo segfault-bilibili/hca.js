@@ -40,6 +40,7 @@ class HCA {
     origin = new Uint8Array(0);
     decrypted = new Uint8Array(0);
     isWholeHCAEncrypted = false;
+    wholeDecodedWAV = new Uint8Array(0);
     wave = new Uint8Array(0);
     channel: Array<stChannel> = [];
 
@@ -632,6 +633,7 @@ class HCA {
                 dst.set(src);
             }
         }
+        this.wholeDecodedWAV = writer;
         return this.wave = writer;
     }
     initializeDecoder() {
@@ -1159,7 +1161,9 @@ if (typeof document === "undefined") {
     onmessage = function (msg : MessageEvent) {
         function handleMsg(msg : MessageEvent) {
             switch (msg.data.cmd) {
-                case "parseKey":
+                case "nop":
+                    return;
+                case "setDecryptionKey":
                     hcainst = new HCA(msg.data.args[0], msg.data.args[1]);
                     return;
                 case "load":
@@ -1173,10 +1177,112 @@ if (typeof document === "undefined") {
                     return hcainst.origin;
                 case "decrypted":
                     return hcainst.decrypted;
+                case "wholeDecodedWAV":
+                    return hcainst.wholeDecodedWAV;
                 default:
                     throw "unknown cmd";
             }
         }
-        this.postMessage({cmd: msg.data.cmd, result: handleMsg(msg)});
+        this.postMessage({taskID: msg.data.taskID, result: handleMsg(msg)});
+    }
+} else {
+    // not in worker
+    class HCAWorkerCtrl {
+        private cmdQueue : Array<{taskID: number, cmd: string, args: Array<any>}>;
+        private resultCallback : Record<number, Function>;
+        private lastTaskID = 0;
+        hcaworker : Worker;
+        errHandlerCallback : Function;
+        private idle = true;
+        private lastTick = 0;
+        private execCmdQueueIfIdle() : void {
+            if (this.idle) {
+                this.idle = false;
+                if (this.cmdQueue.length > 0) this.hcaworker.postMessage(this.cmdQueue[0]);
+            }
+        }
+        private resultHandler(self : HCAWorkerCtrl, msg : MessageEvent) : void {
+            let taskID = msg.data.taskID;
+            for (let i=0; i<self.cmdQueue.length; i++) {
+                if (self.cmdQueue[i].taskID == taskID) {
+                    let nextTask = undefined;
+                    if (i + 1 < self.cmdQueue.length) {
+                        nextTask = self.cmdQueue[i+1];
+                    }
+                    self.cmdQueue.splice(i, 1);
+                    let callback = self.resultCallback[taskID];
+                    delete self.resultCallback[taskID];
+
+                    callback(msg.data.result);
+                    if (nextTask == undefined) {
+                        self.idle = true;
+                    } else {
+                        self.hcaworker.postMessage(nextTask);
+                    }
+
+                    return;
+                }
+            }
+            throw "taskID not found in cmdQueue";
+        }
+        private errHandler(self : HCAWorkerCtrl, e : any) : void {
+            self.hcaworker.terminate();
+            throw e;
+        }
+        sendCmdList(cmdlist : Array<{cmd: string, args: Array<any>, callback: Function}>) : void {
+            for (let i=0; i<cmdlist.length; i++) {
+                let taskID = ++this.lastTaskID;
+                this.resultCallback[taskID] = cmdlist[i].callback;
+                this.cmdQueue.push({taskID: taskID, cmd: cmdlist[i].cmd, args: cmdlist[i].args});
+            }
+            this.execCmdQueueIfIdle();
+        }
+        sendCmd(cmd: string, args: Array<any>, callback: Function) : void {
+            this.sendCmdList([{cmd: cmd, args: args, callback: callback}]);
+        }
+        setDecryptionKey(key1:any = null, key2:any = 0) : void {
+            this.sendCmd("setDecryptionKey", [key1, key2], () => {});
+        }
+        load(hca : Uint8Array) : void {
+            this.sendCmd("load", [hca], () => {});
+        }
+        decode(hca : Uint8Array | undefined = undefined, mode = 32, loop = 0, volume = 1.0) : void {
+            this.sendCmd("decode", [hca, mode, loop, volume], () => {})
+        }
+        getData(keylist : Array<string>, callback: Function) : void {
+            let result : Record<string, any> = {};
+            let remaining = keylist.length;
+            keylist.forEach((key) => {
+                this.sendCmd(key, [], (data: any) => {
+                    result[key] = data;
+                    if (--remaining == 0) {
+                        callback(result);
+                    }
+                });
+            });
+        }
+        shutdown() : void {
+            this.sendCmd("nop", [], () => this.hcaworker.terminate());
+        }
+        tick() : void {
+            this.sendCmd("nop", [], () => this.lastTick = new Date().getTime());
+        }
+        tock(text = "") : void {
+            this.sendCmd("nop", [], () => {
+                let t = new Date().getTime();
+                console.log(`${text} took ${t - this.lastTick} ms`);
+                this.lastTick = t;
+            });
+        }
+        constructor (hcaworker : Worker, errHandlerCallback : Function, key1:any = null, key2:any = 0) {
+            this.cmdQueue = [];
+            this.resultCallback = {};
+            this.hcaworker = hcaworker;
+            this.errHandlerCallback = errHandlerCallback;
+            this.hcaworker.onmessage = (msg) => this.resultHandler(this, msg);
+            this.hcaworker.onerror = (msg) => this.errHandler(this, msg);
+            this.hcaworker.onmessageerror = (msg) => this.errHandler(this, msg);
+            this.setDecryptionKey(key1, key2);
+        }
     }
 }
