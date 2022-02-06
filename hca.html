@@ -22,7 +22,6 @@
     <h3>Decode the whole file</h3>
     (Extra) loop count: <input type="number" step="1" min="0" max="99" placeholder="0-99" id="loopcountinput" value="0"><br>
     <i>Note: loop count is ignored if HCA header doesn't have loop section</i><br>
-    <button disabled id="decodebtn" onclick="decodeWhole()">Decode</button><br>
     <button disabled id="decodeinworkerbtn" onclick="decodeWholeInWorker()">Decode (in background)</button><br>
     <audio id="whole_audio" controls></audio>
     <!-- <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.8.3/dist/ffmpeg.min.js"></script> -->
@@ -38,15 +37,16 @@
 
         var hcabuf = null;
 
-        var decodebtn = document.getElementById("decodebtn");
         var decodeinworkerbtn = document.getElementById("decodeinworkerbtn");
         var downloadbtn = document.getElementById("downloadbtn");
+
+        var ctrlbtns = [decodeinworkerbtn];
 
         function handleFile(files) {
             hcabuf = null;
             recycleObjURLs();
             if (files.length == 1) files[0].arrayBuffer().then((ab) => hcabuf = ab);
-            [decodebtn, decodeinworkerbtn].forEach(btn => btn.disabled = files.length != 1);
+            ctrlbtns.forEach(btn => btn.disabled = files.length != 1);
             downloadbtn.textContent = "download";
         }
 
@@ -55,13 +55,13 @@
             downloadbtn.textContent = "downloading...";
             hcabuf = null;
             recycleObjURLs();
-            [decodebtn, decodeinworkerbtn].forEach(btn => btn.disabled = true);
+            ctrlbtns.forEach(btn => btn.disabled = true);
             let url = document.getElementById("urlinput").value;
             if (url !== "") fetch(url).then((res) => {
                 if (res.status == 200) {
                     res.arrayBuffer().then((ab) => {
                         hcabuf = ab;
-                        [decodebtn, decodeinworkerbtn].forEach(btn => btn.disabled = false);
+                        ctrlbtns.forEach(btn => btn.disabled = false);
                         downloadbtn.textContent = "download (successful)";
                         downloadbtn.disabled = false;
                     });
@@ -104,35 +104,6 @@
                     a.remove();
                 }
             });
-        }
-        function decodeWhole() {
-            recycleObjURLs();
-            let key1 = document.getElementById("key1input").value;
-            let key2 = document.getElementById("key2input").value;
-            let loop = parseInt(document.getElementById("loopcountinput").value);
-            if (isNaN(loop) || loop < 0 || loop > 99) {
-                loop = 0;
-                document.getElementById("loopcountinput").value = 0;
-            }
-            t = new Date().getTime();
-            let hca = new HCA(key1, key2);
-            logTime("new hca");
-            hca.load(new Uint8Array(hcabuf));
-            donwHCAIds.forEach((id) => {
-                if (id === "decryptedHCALink" && !hca.isWholeHCAEncrypted) return;
-                let a = document.createElement("a");
-                a.setAttribute("id", id);
-                a.setAttribute("download", id.replace("HCALink", ".hca"));
-                a.setAttribute("href", URL.createObjectURL(new Blob([hca[id.replace("HCALink", "")]], {type : 'application/octet-stream'})));
-                a.innerHTML = id.replace("HCALink", " HCA");
-                let refNode = decodebtn.nextSibling;
-                document.body.insertBefore(document.createElement("br"), refNode);
-                document.body.insertBefore(a, refNode);
-            });
-            logTime("load & decrypt");
-            const stream = hca.decode(hca.decrypted, 16, loop, 1.0);
-            logTime("decode");
-            whole_audio.src = URL.createObjectURL(new Blob([stream], {type : 'audio/x-wav'}));
         }
         function decodeWholeInWorker() {
             recycleObjURLs();
