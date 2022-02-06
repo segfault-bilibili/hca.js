@@ -42,7 +42,7 @@
 
         function handleFile(files) {
             hcabuf = null;
-            whole_audio.src = "";
+            recycleObjURLs();
             if (files.length == 1) files[0].arrayBuffer().then((ab) => hcabuf = ab);
             decodebtn.disabled = files.length != 1;
         }
@@ -51,7 +51,7 @@
             downloadbtn.disabled = true;
             downloadbtn.textContent = "downloading...";
             hcabuf = null;
-            whole_audio.src = "";
+            recycleObjURLs();
             decodebtn.disabled = true;
             let url = document.getElementById("urlinput").value;
             if (url !== "") fetch(url).then((res) => {
@@ -89,7 +89,21 @@
         }
         */
 
+        const donwHCAIds = ["decryptedHCALink", "originHCALink"];
+        function recycleObjURLs() {
+            if (whole_audio.src !== "") URL.revokeObjectURL(whole_audio.src);
+            whole_audio.src = "";
+            donwHCAIds.forEach((id) => {
+                let a = document.getElementById(id);
+                if (a != null) {
+                    if (a.nextSibling && a.nextSibling.tagName.toLowerCase() === "br") a.nextSibling.remove();
+                    URL.revokeObjectURL(a.getAttribute("href"));
+                    a.remove();
+                }
+            });
+        }
         function decodeWhole() {
+            recycleObjURLs();
             let key1 = document.getElementById("key1input").value;
             let key2 = document.getElementById("key2input").value;
             let loop = parseInt(document.getElementById("loopcountinput").value);
@@ -101,6 +115,17 @@
             let hca = new HCA(key1, key2);
             logTime("new hca");
             hca.load(new Uint8Array(hcabuf));
+            donwHCAIds.forEach((id) => {
+                if (id === "decryptedHCALink" && !hca.isWholeHCAEncrypted) return;
+                let a = document.createElement("a");
+                a.setAttribute("id", id);
+                a.setAttribute("download", id.replace("HCALink", ".hca"));
+                a.setAttribute("href", URL.createObjectURL(new Blob([hca[id.replace("HCALink", "")]], {type : 'application/octet-stream'})));
+                a.innerHTML = id.replace("HCALink", " HCA");
+                let refNode = document.getElementById("decodebtn").nextSibling;
+                document.body.insertBefore(document.createElement("br"), refNode);
+                document.body.insertBefore(a, refNode);
+            });
             logTime("load & decrypt");
             const stream = hca.decode(hca.decrypted, 16, loop, 1.0);
             logTime("decode");
