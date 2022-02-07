@@ -378,6 +378,12 @@ class HCA {
                     this.dataOffset = p.getUint16(6);
                     if (this.dataOffset <= 0) throw "dataOffset is zero or negative";
                     if (!(this.dataOffset <= 0x1000000)) throw "dataOffset is too large (>16M)";
+                    // detect whether this streamed HCA is encrypted
+                    if (this.streamHCA[0] & 0x80 || this.streamHCA[1] & 0x80 || this.streamHCA[2] & 0x80) {
+                        this.isStreamHCAEncrypted = true;
+                    } else {
+                        this.isStreamHCAEncrypted = false;
+                    }
                 } else {
                     throw "fed stream is not HCA";
                 }
@@ -392,12 +398,6 @@ class HCA {
                 if (this.blockSize <= 0) throw "blockSize is zero or negative";
                 this.initializeDecoder();
             }, () => {
-                // detect whether this streamed HCA is encrypted
-                if (this.streamHCA[0] & 0x80 || this.streamHCA[1] & 0x80 || this.streamHCA[2] & 0x80) {
-                    this.isStreamHCAEncrypted = true;
-                } else {
-                    this.isStreamHCAEncrypted = false;
-                }
                 // strip HCA header
                 this.streamHCA = this.streamHCA.subarray(this.dataOffset);
                 this.recycledBytes += this.dataOffset;
