@@ -1194,8 +1194,10 @@ if (typeof document === "undefined") {
         hcaworker : Worker;
         errHandlerCallback : Function;
         private idle = true;
+        private hasError = false;
         private lastTick = 0;
         private execCmdQueueIfIdle() : void {
+            if (this.hasError) throw "there was once an error, hcaworker is now no longer able to exec any cmd";
             if (this.idle) {
                 this.idle = false;
                 if (this.cmdQueue.length > 0) this.hcaworker.postMessage(this.cmdQueue[0]);
@@ -1226,7 +1228,9 @@ if (typeof document === "undefined") {
             throw "taskID not found in cmdQueue";
         }
         private errHandler(self : HCAWorkerCtrl, e : any) : void {
+            this.hasError = true;
             self.hcaworker.terminate();
+            this.errHandlerCallback(e);
             throw e;
         }
         sendCmdList(cmdlist : Array<{cmd: string, args: Array<any>, callback: Function}>) : void {

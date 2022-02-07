@@ -105,7 +105,10 @@
                 document.getElementById("loopcountinput").value = 0;
             }
             let hcaworker = new Worker('hca.js');
-            let hcaworkerctrl = new HCAWorkerCtrl(hcaworker, () => {decodeinworkerbtn.disabled = false;}, key1, key2);
+            let hcaworkerctrl = new HCAWorkerCtrl(hcaworker, () => {
+                decodeinworkerbtn.textContent = "Error! Retry decode in background?";
+                decodeinworkerbtn.disabled = false;
+            }, key1, key2);
             hcaworkerctrl.tick();
             hcaworkerctrl.load(new Uint8Array(hcabuf));
             hcaworkerctrl.tock("load & decrypt");
@@ -126,6 +129,7 @@
                     document.body.insertBefore(document.createElement("br"), refNode);
                     document.body.insertBefore(a, refNode);
                 });
+                decodeinworkerbtn.textContent = "Decode (in background)";
                 decodeinworkerbtn.disabled = false;
             });
             hcaworkerctrl.tock("getData");
