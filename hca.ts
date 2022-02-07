@@ -44,6 +44,8 @@ class HCA {
     wave = new Uint8Array(0);
     channel: Array<stChannel> = [];
 
+    private readonly maxHeaderSize = 0x100000; // 1M
+    private readonly maxBufferDuration = 10 * 60 * 1000; //10min
     streamHCA = new Uint8Array(0);
     fedBytes = 0;
     recycledBytes = 0;
@@ -377,7 +379,7 @@ class HCA {
                     this.version = version.main + '.' + version.sub;
                     this.dataOffset = p.getUint16(6);
                     if (this.dataOffset < 1) throw "dataOffset is zero or negative";
-                    if (!(this.dataOffset <= 0x1000000)) throw "dataOffset is too large (>16M)";
+                    if (!(this.dataOffset <= this.maxHeaderSize)) throw "dataOffset is too large";
                     // detect whether this streamed HCA is encrypted
                     if (this.streamHCA[0] & 0x80 || this.streamHCA[1] & 0x80 || this.streamHCA[2] & 0x80) {
                         this.isStreamHCAEncrypted = true;
