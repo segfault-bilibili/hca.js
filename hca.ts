@@ -44,8 +44,8 @@ class HCA {
     wave = new Uint8Array(0);
     channel: Array<stChannel> = [];
 
-    private readonly maxHeaderSize = 0x100000; // 1M
-    private readonly maxBufferDuration = 10 * 60 * 1000; //10min
+    readonly maxHeaderSize = 0x100000; // 1M
+    readonly maxBufferDuration = 10 * 60 * 1000; //10min
     streamHCA = new Uint8Array(0);
     fedBytes = 0;
     recycledBytes = 0;
