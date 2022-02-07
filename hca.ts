@@ -423,17 +423,17 @@ class HCA {
         // enlarge streamHCA to ensure it can hold full data
         if (this.streamHCA.length < readSize) {
             let newBuf = new Uint8Array(readSize);
-            if (this.fedBytes > 0) newBuf.set(this.streamHCA);
+            if (this.fedBytes - this.recycledBytes > 0) newBuf.set(this.streamHCA);
             this.streamHCA = newBuf;
         }
         if (this.fedBytes - this.recycledBytes + snippet.length < readSize) {
             // wait for more data
-            this.streamHCA.set(snippet, this.fedBytes);
+            this.streamHCA.set(snippet, this.fedBytes - this.recycledBytes);
             this.fedBytes += snippet.length;
         } else {
             if (peek != undefined) {
                 // peek data first
-                this.streamHCA.set(snippet.slice(0, readSize - (this.fedBytes - this.recycledBytes)), this.fedBytes);
+                this.streamHCA.set(snippet.slice(0, readSize - (this.fedBytes - this.recycledBytes)), this.fedBytes - this.recycledBytes);
                 // not changing fedBytes for now
                 peek();
             }
