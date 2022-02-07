@@ -365,7 +365,7 @@ class HCA {
     // streaming support
     // should never be used after calling whole-file load/decrypt/decode etc
     feed(snippet: Uint8Array, mode = 32, volume = 1.0) : void {
-        if (this.dataOffset <= 0) {
+        if (this.dataOffset < 1) {
             // stage 1: get HCA header size (dataOffset)
             this.handleStreamFeed(snippet, 8, () => {
                 let p = new DataView(this.streamHCA.buffer);
@@ -376,7 +376,7 @@ class HCA {
                     };
                     this.version = version.main + '.' + version.sub;
                     this.dataOffset = p.getUint16(6);
-                    if (this.dataOffset <= 0) throw "dataOffset is zero or negative";
+                    if (this.dataOffset < 1) throw "dataOffset is zero or negative";
                     if (!(this.dataOffset <= 0x1000000)) throw "dataOffset is too large (>16M)";
                     // detect whether this streamed HCA is encrypted
                     if (this.streamHCA[0] & 0x80 || this.streamHCA[1] & 0x80 || this.streamHCA[2] & 0x80) {
@@ -390,12 +390,12 @@ class HCA {
             }, () => {
                 if (this.fedBytes >= this.dataOffset) this.feed(new Uint8Array(0), mode, volume);
             });
-        } else if (this.format.blockCount <= 0) {
+        } else if (this.format.blockCount < 1) {
             // stage 2: get full HCA header data
             this.handleStreamFeed(snippet, this.dataOffset, () => {
                 this.info(this.streamHCA);
-                if (this.format.blockCount <= 0) throw "blockCount is zero or negative";
-                if (this.blockSize <= 0) throw "blockSize is zero or negative";
+                if (this.format.blockCount < 1) throw "blockCount is zero or negative";
+                if (this.blockSize < 1) throw "blockSize is zero or negative";
                 this.initializeDecoder();
             }, () => {
                 // strip HCA header
@@ -417,7 +417,7 @@ class HCA {
     private handleStreamFeed(snippet: Uint8Array, readSize: number,
         peek: Function | undefined, postProc: Function | undefined) : void
     {
-        if (readSize <= 0) throw "readSize is zero or negative";
+        if (readSize < 1) throw "readSize is zero or negative";
         // enlarge streamHCA to ensure it can hold full data
         if (this.streamHCA.length < readSize) {
             let newBuf = new Uint8Array(readSize);
