@@ -474,7 +474,7 @@ class HCA {
                     canFeedBytes = fileRemaining < this.streamMaxFeedSize ? fileRemaining : this.streamMaxFeedSize;
                 }
             });
-        } else if (this.fedBytes + snippet.length <= this.dataOffset + this.format.blockCount * this.blockSize) {
+        } else if (this.fedBytes + snippet.length <= this.streamHCAFullLength) {
             // stage 3: get block data
             this.handleStreamFeed(snippet, this.blockSize, undefined, () => {
                 if (!this.handleStreamBlocks(this.streamHCA, this.streamBitDepth, this.streamVolume)) {
