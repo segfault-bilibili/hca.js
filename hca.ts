@@ -470,8 +470,7 @@ class HCA {
                     canFeedBytes = this.feed(new Uint8Array(0)); // pass on returned canFeedBytes
                 } else {
                     // zero block has been decoded so far, therefore PCM buffer must be empty - that's why streamMaxFeedSize is used
-                    let fileRemaining = this.streamHCAFullLength - this.fedBytes;
-                    canFeedBytes = fileRemaining < this.streamMaxFeedSize ? fileRemaining : this.streamMaxFeedSize;
+                    canFeedBytes = this.streamMaxFeedSize;
                 }
             });
         } else if (this.fedBytes + snippet.length <= this.streamHCAFullLength) {
