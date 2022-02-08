@@ -52,6 +52,21 @@ class HCA {
     fedBlocks = 0;
     isStreamHCAEncrypted = false;
 
+    private streamBitDepth = 32;
+    private streamLoop : boolean | number = true;
+    private streamVolume = 1.0;
+    private streamBufferDuration = 0; // indicates uninitialized
+    private streamPCM = new Uint8Array(0);
+    private streamBufferOffset = 0;
+    private streamBufferUsedLength = 0;
+    private streamSampleSize = 0;
+    private streamBlockSampleSize = 0;
+    private streamMaxFeedSize = 0;
+    private streamHCAFullLength = 0;
+
+    streamLoopHCA = new Uint8Array(0);
+    streamTailHCA = new Uint8Array(0);
+
     parseKey (key:any) {
         let buff = new Uint8Array(4);
         try { switch (typeof key) {
@@ -366,7 +381,30 @@ class HCA {
 
     // streaming support
     // should never be used after calling whole-file load/decrypt/decode etc
-    feed(snippet: Uint8Array, mode = 32, volume = 1.0) : void {
+    setupStream(streamBitDepth = 32, streamLoop : boolean | number = true, streamVolume = 1.0, streamBufferDuration = 2000) : void
+    {
+        switch (streamBitDepth) {
+            case 8: case 16: case 24: case 32:
+                break;
+            default:
+                throw "streamBitDepth should be 8/16/24/32";
+        }
+        if (typeof streamLoop === "number") streamLoop = Math.floor(streamLoop);
+        if (!(streamVolume >= 0 && streamVolume <= 1.0)) throw "volume should be within the range of 0-1.0";
+        streamBufferDuration = Math.floor(streamBufferDuration);
+        if (streamBufferDuration < 1 || streamBufferDuration > this.maxBufferDuration) throw `streamBufferDuration should be within the range of 1ms-${this.maxBufferDuration}ms`;
+
+        this.streamBitDepth = streamBitDepth;
+        this.streamLoop = streamLoop;
+        this.streamVolume = streamVolume;
+        this.streamBufferDuration = streamBufferDuration;
+    }
+    feed(snippet: Uint8Array) : number {
+        let canFeedBytes = this.streamMaxFeedSize == 0 ? this.maxHeaderSize : this.streamMaxFeedSize;
+        if (this.streamBufferDuration < 1) {
+            // indicates not initialized with setupStream
+            throw "this.streamBufferDuration is zero or negative";
+        }
         if (this.dataOffset < 1) {
             // stage 1: get HCA header size (dataOffset)
             this.handleStreamFeed(snippet, 8, () => {
@@ -390,7 +428,9 @@ class HCA {
                     throw "fed stream is not HCA";
                 }
             }, () => {
-                if (this.fedBytes >= this.dataOffset) this.feed(new Uint8Array(0), mode, volume);
+                // only after getting full HCA header data, could we then know streamHCAFullLength
+                if (this.fedBytes >= this.dataOffset) canFeedBytes = this.feed(new Uint8Array(0)); // pass on returned canFeedBytes
+                // otherwise, we don't know how long the remaining part is, so we just keep canFeedBytes unchanged
             });
         } else if (this.format.blockCount < 1) {
             // stage 2: get full HCA header data
@@ -399,22 +439,53 @@ class HCA {
                 if (this.format.blockCount < 1) throw "blockCount is zero or negative";
                 if (this.blockSize < 1) throw "blockSize is zero or negative";
                 this.initializeDecoder();
+                // then initialize stream buffer
+                if (this.format.samplingRate < 1) throw "streamed HCA header has invalid samplingRate";
+                let bufSampleCount = Math.ceil(this.format.samplingRate * this.streamBufferDuration / 1000 + 1);
+                this.streamSampleSize = this.format.channelCount * this.streamBitDepth / 8;
+                let bufSize = bufSampleCount * this.streamSampleSize;
+                this.streamPCM = new Uint8Array(bufSize);
+                this.streamBufferOffset = 0;
+                this.streamBufferUsedLength = 0;
+                this.streamBlockSampleSize = this.streamSampleSize * 0x400;
+                bufSampleCount = Math.floor(this.format.samplingRate * this.streamBufferDuration / 1000 - 1);
+                this.streamMaxFeedSize = (bufSampleCount - (bufSampleCount % 0x400)) / 0x400 * this.blockSize;
+                this.streamHCAFullLength = this.dataOffset + this.blockSize * this.format.blockCount;
+                // if HCA is not marked as loopable, disable loop; otherwise just follow the user's wish
+                if (!this.loop.hasLoop) this.streamLoop = false;
+                // allocate memory to keep looping part and "tail" of HCA
+                if (this.streamLoop) {
+                    if (this.loop.start >= this.format.blockCount) throw "streamed HCA header has invalid blockCount or loop start, loop start should be smaller than blockCount";
+                    if (this.loop.end > this.format.blockCount) throw "streamed HCA header has invalid blockCount or loop end, loop end should not exceed blockCount";
+                    if (this.loop.end <= this.loop.start) throw "streamed HCA header has invalid loop section, loop end should exceed loop start";
+                    this.streamLoopHCA = new Uint8Array((this.loop.end - this.loop.start) * this.blockSize);
+                    this.streamTailHCA = new Uint8Array((this.format.blockCount - this.loop.end) * this.blockSize);
+                }
             }, () => {
                 // strip HCA header
                 this.streamHCA = this.streamHCA.subarray(this.dataOffset);
                 this.recycledBytes += this.dataOffset;
                 if (this.fedBytes >= this.dataOffset + this.blockSize) {
-                    this.feed(new Uint8Array(0), mode, volume);
+                    // have at least one complete block
+                    canFeedBytes = this.feed(new Uint8Array(0)); // pass on returned canFeedBytes
+                } else {
+                    // zero block has been decoded so far, therefore PCM buffer must be empty - that's why streamMaxFeedSize is used
+                    let fileRemaining = this.streamHCAFullLength - this.fedBytes;
+                    canFeedBytes = fileRemaining < this.streamMaxFeedSize ? fileRemaining : this.streamMaxFeedSize;
                 }
             });
         } else if (this.fedBytes + snippet.length <= this.dataOffset + this.format.blockCount * this.blockSize) {
             // stage 3: get block data
             this.handleStreamFeed(snippet, this.blockSize, undefined, () => {
-                this.handleStreamBlocks(this.streamHCA, mode, volume);
+                this.handleStreamBlocks(this.streamHCA, this.streamBitDepth, this.streamVolume);
+                let fileRemaining = this.streamHCAFullLength - this.fedBytes;
+                let bufferRemaining = this.getCanFeedBytes(); // estimate how many HCA bytes can be fed then, according to PCM buffer status
+                canFeedBytes = fileRemaining < bufferRemaining ? fileRemaining : bufferRemaining;
             });
         } else {
             throw "unexpected data after decoding all blocks";
         }
+        return canFeedBytes;
     }
     private handleStreamFeed(snippet: Uint8Array, readSize: number,
         peek: Function | undefined, postProc: Function | undefined) : void
@@ -449,18 +520,117 @@ class HCA {
         }
     }
     private handleStreamBlocks(blocks: Uint8Array, mode = 32, volume = 1.0) : void {
-        for (let start = 0; this.fedBytes >= this.dataOffset + this.blockSize * (this.fedBlocks + 1); start += this.blockSize, this.fedBlocks++) {
+        let origFedBlocks = this.fedBlocks;
+        // should decode & drop all complete blocks, leaving the last incomplete one alone
+        let expectedDropSize = blocks.length - (blocks.length % this.blockSize);
+        // calculate PCM buffer consumption
+        let requiredBufSize = this.streamBlockSampleSize * (expectedDropSize / this.blockSize);
+        if (this.streamBufferUsedLength < 0) throw "streamBufferUsedLength is negative";
+        if (requiredBufSize > this.streamPCM.length - this.streamBufferUsedLength) throw "streamPCM buffer will overflow";
+        for (
+            let start = 0;
+            this.fedBytes >= this.dataOffset + this.blockSize * (this.fedBlocks + 1);
+            start += this.blockSize, this.fedBlocks++
+        ) {
             let block = blocks.subarray(start, start + this.blockSize);
-            let wavebuff : Uint8Array;
             if (this.isStreamHCAEncrypted) {
                 this.mask(block, 0, this.blockSize - 2); // in-place decryption
             }
-            wavebuff = this.decodeBlock(block, mode, volume);
+            // keep looping part and "tail" of HCA
+            if (this.streamLoop && this.fedBlocks >= this.loop.start) {
+                if (this.fedBlocks >= this.format.blockCount) throw "fedBlocks exceeds blockCount";
+                let src = block;
+                let dstBuf : Uint8Array;
+                let startBlockIndex : number;
+                if (this.fedBlocks < this.loop.end) {
+                    dstBuf = this.streamLoopHCA;
+                    startBlockIndex = this.loop.start;
+                } else {
+                    dstBuf = this.streamTailHCA;
+                    startBlockIndex = this.loop.end;
+                }
+                let dst = dstBuf.subarray((this.fedBlocks - startBlockIndex) * this.blockSize);
+                dst.set(src);
+            }
+            // decode the block and then write decoded PCM data to buffer
+            let wavebuff : Uint8Array = this.decodeBlock(block, mode, volume);
+            this.writeToStreamPCMBuffer(wavebuff);
         }
         // drop decoded blocks
-        let dropSize = blocks.length - (blocks.length % this.blockSize);
+        let dropSize = (this.fedBlocks - origFedBlocks) * this.blockSize;
+        if (dropSize != expectedDropSize) {
+            throw "unexpected dropSize value, something must be wrong during handleStreamBlocks";
+        }
         this.streamHCA = blocks.slice(dropSize);
         this.recycledBytes += dropSize;
+    }
+    private writeToStreamPCMBuffer(data : Uint8Array) : void {
+        if (this.streamBufferUsedLength < 0) throw "streamBufferUsedLength is negative";
+        if (this.streamBufferUsedLength > this.streamPCM.length) throw "streamBufferUsedLength exceeds streamPCM.length";
+        if (this.streamBufferUsedLength + data.length > this.streamPCM.length) throw "streamPCM will overflow";
+        let src = data;
+        let startOffset = (this.streamBufferOffset + this.streamBufferUsedLength) % this.streamPCM.length;
+        let dst = this.streamPCM.subarray(startOffset);
+        if (startOffset + data.length > this.streamPCM.length) {
+            let copySize = this.streamPCM.length - startOffset;
+            src = data.subarray(0, copySize);
+            dst.set(src);
+            this.streamBufferUsedLength += src.length;
+            // remaining part
+            src = data.subarray(copySize);
+            dst = this.streamPCM;
+        }
+        dst.set(src);
+        this.streamBufferUsedLength += src.length;
+    }
+    flush(flushDuration : number = 3000) : Uint8Array {
+        flushDuration = Math.floor(flushDuration);
+        if (flushDuration < 1 || flushDuration > this.maxBufferDuration) throw `flushDuration should be within the range of 1ms-${this.maxBufferDuration}ms`;
+
+        if (this.format.blockCount < 1) return new Uint8Array(0); // still in stage 1 or 2, no block data received
+
+        if (this.streamBufferUsedLength < 0) throw "streamBufferUsedLength is negative";
+
+        if (this.streamBufferUsedLength > this.streamPCM.length) throw "streamBufferUsedLength is larger than streamPCM.length";
+        if (this.streamBufferUsedLength % this.streamSampleSize != 0) throw "streamBufferUsedLength cannot be divided by streamSampleSize with no remainder";
+
+        let flushSampleCount = this.format.samplingRate * flushDuration;
+        flushSampleCount = (flushSampleCount - (flushSampleCount % 1000)) / 1000;
+        let flushSize = flushSampleCount * this.streamSampleSize;
+        if (flushSize > this.streamBufferUsedLength) flushSize = this.streamBufferUsedLength; // clamp to streamBufferUsedLength
+        if (flushSize < 0) throw "flushSize is negative";
+
+        let origStreamBufferUsedLength = this.streamBufferUsedLength;
+        let src : Uint8Array;
+        let data = new Uint8Array(flushSize);
+        let dst = data;
+        if (this.streamBufferOffset + flushSize > this.streamPCM.length) {
+            let copySize = this.streamPCM.length - this.streamBufferOffset;
+            src = this.streamPCM.subarray(this.streamBufferOffset);
+            dst.set(src);
+            this.streamBufferUsedLength -= src.length;
+            // remaining part
+            src = this.streamPCM.subarray(0, flushSize - src.length);
+            dst = data.subarray(copySize);
+        } else {
+            src = this.streamPCM.subarray(this.streamBufferOffset, this.streamBufferOffset + flushSize);
+        }
+        dst.set(src);
+        this.streamBufferUsedLength -= src.length;
+        if (this.streamBufferUsedLength + flushSize != origStreamBufferUsedLength) throw "unexpected streamBufferUsedLength";
+        this.streamBufferOffset = (this.streamBufferOffset + flushSize) % this.streamPCM.length;
+        return data;
+    }
+    private getCanFeedBytes() : number {
+        // should be only called in stage 3, at that time the PCM buffer should be initialized
+        if (this.streamPCM.length == 0) throw "streamPCM.length is zero";
+        if (this.streamPCM.length < this.streamBufferUsedLength) throw "this.streamPCM.length is smaller than streamBufferUsedLength";
+        let availPCMBytes = this.streamPCM.length - this.streamBufferUsedLength;
+        if (this.streamSampleSize < 1) throw "streamSampleSize is zero or negative";
+        if (availPCMBytes % this.streamSampleSize != 0) throw "availPCMBytes cannot be divided by streamSampleSize with no remainder";
+        let availSampleCount = availPCMBytes / this.streamSampleSize;
+        if (this.blockSize < 1) throw "blockSize is zero or negative";
+        return ((availSampleCount - (availSampleCount % 0x400)) / 0x400) * this.blockSize;
     }
 
     decode(hca : Uint8Array | undefined = this.decrypted, mode = 32, loop = 0, volume = 1.0) : Uint8Array {
