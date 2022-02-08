@@ -61,7 +61,6 @@ class HCA {
     private streamBufferUsedLength = 0;
     private streamSampleSize = 0;
     private streamBlockSampleSize = 0;
-    private streamMaxFeedSize = 0;
     private streamHCAFullLength = 0;
 
     streamLoopHCA = new Uint8Array(0);
@@ -447,7 +446,6 @@ class HCA {
                 this.streamBufferUsedLength = 0;
                 this.streamBlockSampleSize = this.streamSampleSize * 0x400;
                 bufSampleCount = Math.floor(this.format.samplingRate * this.streamBufferDuration / 1000 - 1);
-                this.streamMaxFeedSize = (bufSampleCount - (bufSampleCount % 0x400)) / 0x400 * this.blockSize;
                 this.streamHCAFullLength = this.dataOffset + this.blockSize * this.format.blockCount;
                 // if HCA is not marked as loopable, disable loop; otherwise just follow the user's wish
                 if (!this.loop.hasLoop) this.streamLoop = false;
