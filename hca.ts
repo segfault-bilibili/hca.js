@@ -477,10 +477,14 @@ class HCA {
         } else if (this.fedBytes + snippet.length <= this.dataOffset + this.format.blockCount * this.blockSize) {
             // stage 3: get block data
             this.handleStreamFeed(snippet, this.blockSize, undefined, () => {
-                this.handleStreamBlocks(this.streamHCA, this.streamBitDepth, this.streamVolume);
-                let fileRemaining = this.streamHCAFullLength - this.fedBytes;
-                let bufferRemaining = this.getCanFeedBytes(); // estimate how many HCA bytes can be fed then, according to PCM buffer status
-                canFeedBytes = fileRemaining < bufferRemaining ? fileRemaining : bufferRemaining;
+                if (!this.handleStreamBlocks(this.streamHCA, this.streamBitDepth, this.streamVolume)) {
+                    // not all blocks decoded, because PCM buffer would then overflow if did so
+                    canFeedBytes = 0; // signal the caller to flush, so that some space could then be freed up
+                } else {
+                    let fileRemaining = this.streamHCAFullLength - this.fedBytes;
+                    let bufferRemaining = this.getCanFeedBytes(); // estimate how many HCA bytes can be fed then, according to PCM buffer status
+                    canFeedBytes = fileRemaining < bufferRemaining ? fileRemaining : bufferRemaining;
+                }
             });
         } else {
             throw "unexpected data after decoding all blocks";
@@ -519,17 +523,31 @@ class HCA {
             if (postProc !== undefined) postProc();
         }
     }
-    private handleStreamBlocks(blocks: Uint8Array, mode = 32, volume = 1.0) : void {
+    private handleStreamBlocks(blocks: Uint8Array, mode = 32, volume = 1.0) : boolean {
         let origFedBlocks = this.fedBlocks;
         // should decode & drop all complete blocks, leaving the last incomplete one alone
         let expectedDropSize = blocks.length - (blocks.length % this.blockSize);
         // calculate PCM buffer consumption
         let requiredBufSize = this.streamBlockSampleSize * (expectedDropSize / this.blockSize);
         if (this.streamBufferUsedLength < 0) throw "streamBufferUsedLength is negative";
-        if (requiredBufSize > this.streamPCM.length - this.streamBufferUsedLength) throw "streamPCM buffer will overflow";
+        let availPCMBytes = this.streamPCM.length - this.streamBufferUsedLength;
+        let HCAdeficit = 0;
+        let PCMdeficit = requiredBufSize - availPCMBytes;
+        if (PCMdeficit > 0) {
+            // PCM buffer will overflow if we just continue to decode all blocks,
+            // so we just decode as many blocks as we can.
+            // After that, we just keep the remaining HCA data, for now - until later flush to free some PCM buffer space up.
+            if (this.streamSampleSize < 1) throw "streamSampleSize is zero or negative";
+            if (PCMdeficit % this.streamSampleSize != 0) throw "PCMdeficit cannot be divided by streamSampleSize with no remainder";
+            let deficitSampleCount = PCMdeficit / this.streamSampleSize;
+            deficitSampleCount += 0x400 - 1;
+            HCAdeficit = (deficitSampleCount - (deficitSampleCount % 0x400)) / 0x400 * this.blockSize;
+            expectedDropSize -= HCAdeficit;
+            if (HCAdeficit < 0) throw "HCAdeficit is negative";
+        }
         for (
             let start = 0;
-            this.fedBytes >= this.dataOffset + this.blockSize * (this.fedBlocks + 1);
+            this.fedBytes - HCAdeficit >= this.dataOffset + this.blockSize * (this.fedBlocks + 1);
             start += this.blockSize, this.fedBlocks++
         ) {
             let block = blocks.subarray(start, start + this.blockSize);
@@ -563,6 +581,7 @@ class HCA {
         }
         this.streamHCA = blocks.slice(dropSize);
         this.recycledBytes += dropSize;
+        return HCAdeficit == 0;
     }
     private writeToStreamPCMBuffer(data : Uint8Array) : void {
         if (this.streamBufferUsedLength < 0) throw "streamBufferUsedLength is negative";
