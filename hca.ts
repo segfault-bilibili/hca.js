@@ -43,6 +43,7 @@ class HCA {
     wholeDecodedWAV = new Uint8Array(0);
     wave = new Uint8Array(0);
     channel: Array<stChannel> = [];
+    channelAtLoopEnd: Array<stChannel> = []; // for reworking the "seam"
 
     readonly maxHeaderSize = 0x100000; // 1M
     readonly maxBufferDuration = 10 * 60 * 1000; //10min
@@ -778,8 +779,30 @@ class HCA {
             let block = hca.subarray(startOffset, startOffset + this.blockSize);
             let wavebuff = this.decodeBlock(block, mode, volume, writer, ftell);
             ftell += wavebuff.length;
+            if (this.loop.hasLoop && loop && l == this.loop.end - 1) {
+                // save the internal state at this moment, in order to rework the "seam"
+                this.channelAtLoopEnd = [];
+                for (let c of this.channel) {
+                    this.channelAtLoopEnd.push(c.clone());
+                }
+            }
         }
-        this.channel = [];
+        this.channel = []; // clear the internal state
+        // rework the "seam" if needed
+        let seamBuff  = new Uint8Array(0);
+        if (this.loop.hasLoop && loop) {
+            // rewind the internal state
+            for (let c of this.channelAtLoopEnd) {
+                this.channel.push(c.clone());
+            }
+            // re-decode
+            let startOffset = this.dataOffset + this.blockSize * this.loop.start;
+            let block = hca.subarray(startOffset, startOffset + this.blockSize);
+            seamBuff = this.decodeBlock(block, mode, volume);
+            // clear the internal state again
+            this.channel = [];
+        }
+        // decoding done, then just copy looping part
         if (this.loop.hasLoop && loop) {
             let wavDataOffset = writer.length - data.size;
             // copy "tail"
@@ -790,9 +813,13 @@ class HCA {
                 dst.set(src);
             }
             // copy looping audio clips
-            let src = new Uint8Array(writer.buffer, wavDataOffset + loopStartOffsetInWavData, loopSizeInWav);
+            let src = new Uint8Array(writer.buffer, wavDataOffset + loopStartOffsetInWavData + blockSizeInWav, loopSizeInWav - blockSizeInWav);
             for (let i = 0; i < loop; i++) {
-                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, loopSizeInWav);
+                // copy the "seam"
+                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, blockSizeInWav);
+                dst.set(seamBuff);
+                // copy remaining part
+                dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav + blockSizeInWav, loopSizeInWav - blockSizeInWav);
                 dst.set(src);
             }
         }
@@ -921,6 +948,39 @@ class stChannel {
         new Float64Array(0x80), new Float64Array(0x80),
         new Float64Array(0x80), new Float64Array(0x80)
     ];
+    private cloneTypedArray(obj: any) {
+        if (obj instanceof Int8Array) return obj.slice(0);
+        if (obj instanceof Uint8Array) return obj.slice(0);
+        if (obj instanceof Uint8ClampedArray) return obj.slice(0);
+        if (obj instanceof Int16Array) return obj.slice(0);
+        if (obj instanceof Uint16Array) return obj.slice(0);
+        if (obj instanceof Int32Array) return obj.slice(0);
+        if (obj instanceof Uint32Array) return obj.slice(0);
+        if (obj instanceof Float32Array) return obj.slice(0);
+        if (obj instanceof Float64Array) return obj.slice(0);
+        return obj;
+    }
+    clone() : stChannel {
+        // ref: https://stackoverflow.com/questions/28150967/typescript-cloning-object
+        let ret = new stChannel() as any;
+        for (let key in this) {
+            switch (typeof this[key]) {
+                case "number":
+                    ret[key] = this[key];
+                    break;
+                case "object":
+                    if (this[key] instanceof Array) {
+                        for (let key_ in this[key]) {
+                            ret[key][key_] = this.cloneTypedArray(this[key][key_]);
+                        }
+                    } else {
+                        ret[key] = this.cloneTypedArray(this[key]);
+                    }
+                    break;
+            }
+        }
+        return ret;
+    }
     Decode1(data: clData, a: number, b: number, ath = new Uint8Array(0x80)) {
         const scalelist = new Uint8Array([
             0x0E,0x0E,0x0E,0x0E,0x0E,0x0E,0x0D,0x0D,
