@@ -11,14 +11,20 @@
     <input type="file" id="hcainput" accept=".hca" onchange="handleFile(this.files)"><br>
     Or <button id="downloadbtn" onclick="download()">download</button> from URL: <input type="text" spellcheck="false" id="urlinput" value="bgm01_anime02_hca.hca"><br>
     <hr>
-    <!--
-    <h3>Streamed decoding & play (through <i>experimental</i> Media Source Extensions API)</h3>
-    <input type="checkbox" id="loopflaginput" checked label="looplabel"><label for="looplabel">Loop</label><br>
-    <button disabled id="playbtn" onclick="play()">Play</button><br>
+    <h3>Streamed decoding & play (<i>experimental</i> Media Source Extensions (MSE) API)</h3>
+    <font color="#FF0000">Not available on iPhone (available on iPad)</font><br>
+    <input type="checkbox" id="mseloopflaginput" checked label="mselooplabel"><label for="mselooplabel">Loop</label><br>
+    <button disabled id="mseplaybtn" onclick="mseplay()">Play</button><br>
     <audio id="stream_audio" controls></audio><br>
     <br>
     <hr>
-    -->
+    <h3>Streamed decoding & play (Audio Worklet API)</h3>
+    <font color="#FF0000">Available on recent iPhone, but may be unavailable on some very old devices</font><br>
+    <input type="checkbox" id="awloopflaginput" checked label="awlooplabel"><label for="awlooplabel">Loop</label><br>
+    <button disabled id="awplaybtn" onclick="awplay()">Play</button><br>
+    <button disabled id="awstopbtn" onclick="awstop()">Stop</button><br>
+    <br>
+    <hr>
     <h3>Decode the whole file</h3>
     (Extra) loop count: <input type="number" step="1" min="0" max="99" placeholder="0-99" id="loopcountinput" value="0"><br>
     <i>Note: loop count is ignored if HCA header doesn't have loop section</i><br>
@@ -28,11 +34,15 @@
     <script src="hca.js"></script>
     <script>
         var hcabuf = null;
+        //var refPCMData = null; //DEBUG
 
+        var mseplaybtn = document.getElementById("mseplaybtn");
+        var awplaybtn = document.getElementById("awplaybtn");
+        var awstopbtn = document.getElementById("awstopbtn");
         var decodeinworkerbtn = document.getElementById("decodeinworkerbtn");
         var downloadbtn = document.getElementById("downloadbtn");
 
-        var ctrlbtns = [decodeinworkerbtn];
+        var ctrlbtns = [mseplaybtn, awplaybtn, awstopbtn, decodeinworkerbtn];
 
         function handleFile(files) {
             hcabuf = null;
@@ -65,26 +75,99 @@
             });
         }
 
-        /*
         var audioCtx = null;
-        function play() {
+        function mseplay() {
             if (!audioCtx) {
-                let AudioContext = window.AudioContext;// || window.webkitAudioContext;
+                let AudioContext = window.AudioContext;
                 audioCtx = new AudioContext();
             }
 
             let key1 = document.getElementById("key1input").value;
             let key2 = document.getElementById("key2input").value;
-            let loopFlag = document.getElementById("loopflaginput").checked;
-            hca.play(new Uint8Array(hcabuf), loopFlag, audioCtx);
-            console.log("Started playing");
+            let loopFlag = document.getElementById("mseloopflaginput").checked;
+
+            mseplaybtn.disabled = true;
+
+            //TODO
+        }
+
+        function awplay() {
+            if (!audioCtx) {
+                let AudioContext = window.AudioContext;
+                audioCtx = new AudioContext();
+            }
+
+            let key1 = document.getElementById("key1input").value;
+            let key2 = document.getElementById("key2input").value;
+            let loopFlag = document.getElementById("awloopflaginput").checked;
+
+            awplaybtn.disabled = true;
+
+            //TODO
+        }
+        function awstop() {
+            // TODO
+            awplaybtn.disabled = false;
+        }
+
+        /*
+        //DEBUG
+        function testfeed(snippetsize, flushSize) {
+            if (snippetsize == undefined || snippetsize < 1) throw `invalid snippetsize=${snippetsize}`;
+            if (flushSize == undefined || flushSize < 1) throw `invalid snippetsize=${flushSize}`;
+            console.log(`testing for snippetsize=${snippetsize} flushSize=${flushSize}...`);
+            let key1 = document.getElementById("key1input").value;
+            let key2 = document.getElementById("key2input").value;
+            let loopFlag = document.getElementById("awloopflaginput").checked;
+            let hca = new HCA(key1, key2);
+            let loopcount = parseInt(document.getElementById("loopcountinput").value);
+            hca.setupStream(16, loopcount, 1.0);
+            let decoded = [];
+            let feedctr = 0, flushctr = 0;
+            for (let i=0; i<hcabuf.byteLength; i+=snippetsize) {
+                let len = i + snippetsize > hcabuf.byteLength ? hcabuf.byteLength - i : snippetsize;
+                let d = new Uint8Array(hcabuf, i, len);
+                hca.feed(d);
+                feedctr++;
+            }
+            hca.feed(new Uint8Array(0));
+            let decodedlen = 0
+            while (true) {
+                decoded.push(hca.flush(flushSize));
+                if (decoded[decoded.length-1].length == 0) break;
+                decodedlen += decoded[decoded.length-1].length;
+                console.log(`flushed ${decoded[decoded.length-1].length} bytes, total ${decodedlen} bytes`);
+                if (decodedlen > 1048576*1024) throw `decodedlen exceeded 1G`;
+                flushctr++;
+                hca.feed(new Uint8Array(0));
+            }
+            console.log(`feedctr=${feedctr} flushctr=${flushctr} hcabuf.byteLength/snippetsize=${hcabuf.byteLength/snippetsize}`);
+            let decodedbuf = new Uint8Array(decodedlen);
+            let writtenlen = 0;
+            decoded.forEach(b => {decodedbuf.set(b, writtenlen); writtenlen += b.length;});
+            console.log(`all data decoded， got ${decodedlen} bytes, comparing to refPCMData...`);
+            if (refPCMData.length != decodedbuf.length)
+                throw `refPCMData.length=${refPCMData.length} != decodedbuf.length=${decodedbuf.length}`;
+            console.log("pcm data", URL.createObjectURL(new Blob([decodedbuf.buffer], {type: "application/octet-stream"})));
+            console.log("loop hca", URL.createObjectURL(new Blob([hca.streamLoopHCA.slice(0).buffer], {type: "application/octet-stream"})));
+            console.log("tail hca", URL.createObjectURL(new Blob([hca.streamTailHCA.slice(0).buffer], {type: "application/octet-stream"})));
+            for (let i=0; i<refPCMData.length; i++) {
+                if (refPCMData[i] != decodedbuf[i]) throw `data mismatch at offset ${i}`;
+            }
+            console.log(`test passed for snippetsize=${snippetsize}`);
+            //console.log(URL.createObjectURL(new Blob([decodedbuf], {type: "application/octet-stream"})));
         }
         */
 
         const donwHCAIds = ["decryptedHCALink", "originHCALink"];
         function recycleObjURLs() {
-            if (whole_audio.src !== "") URL.revokeObjectURL(whole_audio.src);
-            whole_audio.src = "";
+            [stream_audio, whole_audio].forEach((e) => {
+                if (e.src !== "") {
+                    let url = e.src;
+                    e.src = "";
+                    URL.revokeObjectURL(url);
+                }
+            });
             donwHCAIds.forEach((id) => {
                 let a = document.getElementById(id);
                 if (a != null) {
@@ -117,6 +200,7 @@
             hcaworkerctrl.tock("decode");
             hcaworkerctrl.tick();
             hcaworkerctrl.getData(["isWholeHCAEncrypted", "origin", "decrypted", "wholeDecodedWAV"], (result) => {
+                //refPCMData = result.wholeDecodedWAV.slice(loop ? 0x2C : 0x70);//DEBUG
                 whole_audio.src = URL.createObjectURL(new Blob([result.wholeDecodedWAV], {type : 'audio/x-wav'}));
                 donwHCAIds.forEach((id) => {
                     if (id === "decryptedHCALink" && !result.isWholeHCAEncrypted) return;
