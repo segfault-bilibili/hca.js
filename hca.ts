@@ -862,22 +862,19 @@ class HCA {
             }
         }
         this.channel = []; // clear the internal state
-        // rework the "seam" if needed
         let seamBuff  = new Uint8Array(0);
         if (this.loop.hasLoop && loop) {
+            // rework the "seam"
             // rewind the internal state
-            for (let c of this.channelAtLoopEnd) {
-                this.channel.push(c.clone());
-            }
+            this.channel = this.channelAtLoopEnd;
+            this.channelAtLoopEnd = [];
             // re-decode
             let startOffset = this.dataOffset + this.blockSize * this.loop.start;
             let block = hca.subarray(startOffset, startOffset + this.blockSize);
             seamBuff = this.decodeBlock(block, mode, volume);
             // clear the internal state again
             this.channel = [];
-        }
-        // decoding done, then just copy looping part
-        if (this.loop.hasLoop && loop) {
+            // decoding done, then just copy looping part
             let wavDataOffset = writer.length - data.size;
             // copy "tail"
             let tailSize = this.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
