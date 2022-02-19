@@ -67,6 +67,11 @@ class HCA {
     streamLoopHCA = new Uint8Array(0);
     streamTailHCA = new Uint8Array(0);
 
+    private streamLoopStatus = {
+        cycle: 0,
+        blockIndex: 0,
+    }
+
     parseKey (key:any) {
         let buff = new Uint8Array(4);
         try { switch (typeof key) {
@@ -450,13 +455,15 @@ class HCA {
                 this.streamHCAFullLength = this.dataOffset + this.blockSize * this.format.blockCount;
                 // if HCA is not marked as loopable, disable loop; otherwise just follow the user's wish
                 if (!this.loop.hasLoop) this.streamLoop = false;
-                // allocate memory to keep looping part and "tail" of HCA
                 if (this.streamLoop) {
                     if (this.loop.start >= this.format.blockCount) throw "streamed HCA header has invalid blockCount or loop start, loop start should be smaller than blockCount";
                     if (this.loop.end > this.format.blockCount) throw "streamed HCA header has invalid blockCount or loop end, loop end should not exceed blockCount";
                     if (this.loop.end <= this.loop.start) throw "streamed HCA header has invalid loop section, loop end should exceed loop start";
+                    // allocate memory to keep looping part and "tail" of HCA
                     this.streamLoopHCA = new Uint8Array((this.loop.end - this.loop.start) * this.blockSize);
                     this.streamTailHCA = new Uint8Array((this.format.blockCount - this.loop.end) * this.blockSize);
+                    // prepare for 1st (extra) cycle of loop
+                    this.streamLoopStatus.blockIndex = this.loop.start;
                 }
             }, () => {
                 // strip HCA header
@@ -469,9 +476,15 @@ class HCA {
             });
         } else if (this.fedBytes + snippet.length <= this.streamHCAFullLength) {
             // stage 3: get block data
-            this.handleStreamFeed(snippet, this.blockSize, undefined, () => {
+            if (this.fedBytes < this.streamHCAFullLength) {
+                this.handleStreamFeed(snippet, this.blockSize, undefined, () => {
+                    this.handleStreamBlocks(this.streamHCA, this.streamBitDepth, this.streamVolume);
+                });
+            } else if (this.fedBytes == this.streamHCAFullLength) {
+                // we have already got the whole file
+                // trigger decoding previously saved loop or tail HCA data
                 this.handleStreamBlocks(this.streamHCA, this.streamBitDepth, this.streamVolume);
-            });
+            } else throw "fedBytes should not exceed streamHCAFullLength";
         } else {
             throw "unexpected data after decoding all blocks";
         }
@@ -509,6 +522,11 @@ class HCA {
         }
     }
     private handleStreamBlocks(blocks: Uint8Array, mode = 32, volume = 1.0) : void {
+        if (this.fedBlocks > this.format.blockCount) throw "fedBlocks should not exceed blockCount";
+
+        // ugly way of reusing this method to decode loop or tail data
+        let isDivertingBeyondFileEnd = this.fedBlocks == this.format.blockCount;
+
         let origFedBlocks = this.fedBlocks;
         // should decode & drop all complete blocks, leaving the last incomplete one alone
         let expectedDropSize = blocks.length - (blocks.length % this.blockSize);
@@ -530,42 +548,98 @@ class HCA {
             expectedDropSize -= HCAdeficit;
             if (HCAdeficit < 0) throw "HCAdeficit is negative";
         }
+
+        let divertedHCASize = 0;
+        if (isDivertingBeyondFileEnd) {
+            // calculate how many bytes of previously-saved loop or tail HCA should we replay
+            // without overflowing PCM buffer, of course
+            if (this.streamSampleSize < 1) throw "streamSampleSize is zero or negative";
+            if (availPCMBytes % this.streamSampleSize != 0) throw "availPCMBytes cannot be divided by streamSampleSize with no remainder";
+            let availSampleCount = availPCMBytes / this.streamSampleSize;
+            divertedHCASize = (availSampleCount - (availSampleCount % 0x400)) / 0x400 * this.blockSize;
+            if (divertedHCASize < 0) throw "divertedHCASize is negative";
+        }
+
         for (
             let start = 0;
-            this.fedBytes - HCAdeficit >= this.dataOffset + this.blockSize * (this.fedBlocks + 1);
-            start += this.blockSize, this.fedBlocks++
+            isDivertingBeyondFileEnd
+                ? start < divertedHCASize
+                : this.fedBytes - HCAdeficit >= this.dataOffset + this.blockSize * (this.fedBlocks + 1);
+            start += this.blockSize, isDivertingBeyondFileEnd ? this.fedBlocks : this.fedBlocks++
         ) {
             let block = blocks.subarray(start, start + this.blockSize);
-            if (this.isStreamHCAEncrypted) {
+            if (!isDivertingBeyondFileEnd && this.isStreamHCAEncrypted) {
                 this.mask(block, 0, this.blockSize - 2); // in-place decryption
             }
-            // keep looping part and "tail" of HCA
-            if (this.streamLoop && this.fedBlocks >= this.loop.start) {
-                if (this.fedBlocks >= this.format.blockCount) throw "fedBlocks exceeds blockCount";
-                let src = block;
-                let dstBuf : Uint8Array;
-                let startBlockIndex : number;
-                if (this.fedBlocks < this.loop.end) {
-                    dstBuf = this.streamLoopHCA;
-                    startBlockIndex = this.loop.start;
-                } else {
-                    dstBuf = this.streamTailHCA;
-                    startBlockIndex = this.loop.end;
+            if (this.streamLoop) {
+                if (this.fedBlocks >= this.loop.start && this.fedBlocks < this.format.blockCount) {
+                    // copy looping part and "tail" of HCA
+                    let src = block;
+                    let dstBuf : Uint8Array;
+                    let startBlockIndex : number;
+                    if (this.fedBlocks < this.loop.end) {
+                        dstBuf = this.streamLoopHCA;
+                        startBlockIndex = this.loop.start;
+                    } else {
+                        dstBuf = this.streamTailHCA;
+                        startBlockIndex = this.loop.end;
+                    }
+                    let dst = dstBuf.subarray((this.fedBlocks - startBlockIndex) * this.blockSize);
+                    dst.set(src);
                 }
-                let dst = dstBuf.subarray((this.fedBlocks - startBlockIndex) * this.blockSize);
-                dst.set(src);
+
+                if (this.fedBlocks >= this.loop.end) {
+                    // the looping part has completed for at least once,
+                    // divert to loop or tail blocks
+                    if (this.streamLoop === true || this.streamLoopStatus.cycle < this.streamLoop) {
+                        // infinite loop, or just didn't run out remaining (extra) cycles yet
+                        if (this.streamLoopStatus.blockIndex < this.loop.start || this.streamLoopStatus.blockIndex >= this.loop.end)
+                            throw "invalid streamLoopStatus.blockIndex when diverting to loop";
+                        let loopHCAStart = (this.streamLoopStatus.blockIndex - this.loop.start) * this.blockSize;
+                        block = this.streamLoopHCA.subarray(loopHCAStart, loopHCAStart + this.blockSize);
+                        if (++this.streamLoopStatus.blockIndex == this.loop.end) {
+                            // yet another cycle completed
+                            if (++this.streamLoopStatus.cycle < this.streamLoop) {
+                                // there are still remaining cycles, start over
+                                this.streamLoopStatus.blockIndex = this.loop.start;
+                            } else {
+                                // now completed the last cycle of loop
+                                if (this.streamLoopStatus.blockIndex == this.format.blockCount) {
+                                    // there's no tail beyond loop end
+                                    start = divertedHCASize; // break out after decoding the last block
+                                } // else divert to tail in the next for-loop cycle
+                            }
+                        } // else just play the next block because the current cycle of loop has not yet completed
+                    } else {
+                        // no longer in loop, divert to tail
+                        if (this.streamLoopStatus.blockIndex < this.loop.end || this.streamLoopStatus.blockIndex > this.format.blockCount)
+                            throw "invalid streamLoopStatus.blockIndex when diverting to tail";
+                        if (this.streamLoopStatus.blockIndex == this.format.blockCount)
+                            break; // already reached the end before, will no longer decode any more data
+                        let tailHCAStart = (this.streamLoopStatus.blockIndex - this.loop.end) * this.blockSize;
+                        block = this.streamTailHCA.subarray(tailHCAStart, tailHCAStart + this.blockSize);
+                        if (++this.streamLoopStatus.blockIndex == this.format.blockCount) {
+                            // finally, reached the end
+                            start = divertedHCASize; // break out after decoding the last block
+                        } // else just play the next block because the tail has not yet completed
+                    }
+                }
+            } else if (isDivertingBeyondFileEnd) {
+                break; // loop is not enabled at all, so no more data beyond file end should be decoded
             }
             // decode the block and then write decoded PCM data to buffer
             let wavebuff : Uint8Array = this.decodeBlock(block, mode, volume);
             this.writeToStreamPCMBuffer(wavebuff);
         }
-        // drop decoded blocks
-        let dropSize = (this.fedBlocks - origFedBlocks) * this.blockSize;
-        if (dropSize != expectedDropSize) {
-            throw "unexpected dropSize value, something must be wrong during handleStreamBlocks";
-        }
-        this.streamHCA = blocks.slice(dropSize);
-        this.recycledBytes += dropSize;
+        if (!isDivertingBeyondFileEnd) {
+            // drop decoded blocks
+            let dropSize = (this.fedBlocks - origFedBlocks) * this.blockSize;
+            if (dropSize != expectedDropSize) {
+                throw "unexpected dropSize value, something must be wrong during handleStreamBlocks";
+            }
+            this.streamHCA = blocks.slice(dropSize);
+            this.recycledBytes += dropSize;
+        } // else - we are just decoding previously saved loop or tail HCA data - no need to drop blocks from streamHCA
     }
     private writeToStreamPCMBuffer(data : Uint8Array) : void {
         if (this.streamBufferUsedLength < 0) throw "streamBufferUsedLength is negative";
