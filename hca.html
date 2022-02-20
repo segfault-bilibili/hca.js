@@ -187,7 +187,9 @@
                 loop = 0;
                 document.getElementById("loopcountinput").value = 0;
             }
-            let hcaworkerctrl = new HCAWorkerCtrl(new URL("hca.js", document.baseURI), () => {
+            let hcajsUrl = new URL("hca.js", document.baseURI);
+            let pcmPlayerUrl = new URL("pcmPlayer.js", document.baseURI);
+            let hcaworkerctrl = new HCAWorkerCtrl(hcajsUrl, pcmPlayerUrl, () => {
                 decodeinworkerbtn.textContent = "Error! Retry decode in background?";
                 decodeinworkerbtn.disabled = false;
             }, key1, key2);

@@ -1483,6 +1483,7 @@ if (typeof document === "undefined") {
     // not in worker
     class HCAWorkerCtrl {
         private selfUrl : URL;
+        private audioWorkletUrl : URL;
         private cmdQueue : Array<{taskID: number, cmd: string, args: Array<any>}>;
         private resultCallback : Record<number, Function>;
         private lastTaskID = 0;
@@ -1571,8 +1572,9 @@ if (typeof document === "undefined") {
                 console.log(`${text} took ${new Date().getTime() - this.lastTick} ms`);
             });
         }
-        constructor (selfUrl : URL, errHandlerCallback : Function, key1:any = null, key2:any = 0) {
+        constructor (selfUrl : URL, audioWorkletUrl : URL, errHandlerCallback : Function, key1:any = null, key2:any = 0) {
             this.selfUrl = selfUrl;
+            this.audioWorkletUrl = audioWorkletUrl;
             this.cmdQueue = [];
             this.resultCallback = {};
             this.hcaworker = new Worker(selfUrl);
