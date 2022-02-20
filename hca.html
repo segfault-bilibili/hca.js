@@ -34,7 +34,9 @@
     <script src="hca.js"></script>
     <script>
         var hcabuf = null;
-        //var refPCMData = null; //DEBUG
+        var refPCMData = null; //DEBUG
+
+        var awctrl = null;
 
         var mseplaybtn = document.getElementById("mseplaybtn");
         var awplaybtn = document.getElementById("awplaybtn");
@@ -77,11 +79,6 @@
 
         var audioCtx = null;
         function mseplay() {
-            if (!audioCtx) {
-                let AudioContext = window.AudioContext;
-                audioCtx = new AudioContext();
-            }
-
             let key1 = document.getElementById("key1input").value;
             let key2 = document.getElementById("key2input").value;
             let loopFlag = document.getElementById("mseloopflaginput").checked;
@@ -92,25 +89,34 @@
         }
 
         function awplay() {
-            if (!audioCtx) {
-                let AudioContext = window.AudioContext;
-                audioCtx = new AudioContext();
-            }
-
             let key1 = document.getElementById("key1input").value;
             let key2 = document.getElementById("key2input").value;
             let loopFlag = document.getElementById("awloopflaginput").checked;
 
             awplaybtn.disabled = true;
 
-            //TODO
+            // TODO
+            if (awctrl) {
+                awctrl.shutdown();
+                awctrl = null;
+            }
+            let hcajsUrl = new URL("hca.js", document.baseURI);
+            let pcmPlayerUrl = new URL("pcmPlayer.js", document.baseURI);
+            awctrl = new HCAWorkerCtrl(hcajsUrl, pcmPlayerUrl, () => {
+                decodeinworkerbtn.textContent = "Error! Retry decode in background?";
+                decodeinworkerbtn.disabled = false;
+            }, key1, key2);
+            awctrl.setupStream(32, loopFlag, 1.0);
+            awctrl.feed(new Uint8Array(hcabuf));
         }
         function awstop() {
-            // TODO
+            if (awctrl) {
+                awctrl.shutdown();
+                awctrl = null;
+            }
             awplaybtn.disabled = false;
         }
 
-        /*
         //DEBUG
         function testfeed(snippetsize, flushSize) {
             if (snippetsize == undefined || snippetsize < 1) throw `invalid snippetsize=${snippetsize}`;
@@ -157,7 +163,6 @@
             console.log(`test passed for snippetsize=${snippetsize}`);
             //console.log(URL.createObjectURL(new Blob([decodedbuf], {type: "application/octet-stream"})));
         }
-        */
 
         const donwHCAIds = ["decryptedHCALink", "originHCALink"];
         function recycleObjURLs() {
@@ -201,7 +206,7 @@
             hcaworkerctrl.tock("decode");
             hcaworkerctrl.tick();
             hcaworkerctrl.getData(["isWholeHCAEncrypted", "origin", "decrypted", "wholeDecodedWAV"], (result) => {
-                //refPCMData = result.wholeDecodedWAV.slice(loop ? 0x2C : 0x70);//DEBUG
+                refPCMData = result.wholeDecodedWAV.slice(loop ? 0x2C : 0x70);//DEBUG
                 whole_audio.src = URL.createObjectURL(new Blob([result.wholeDecodedWAV], {type : 'audio/x-wav'}));
                 donwHCAIds.forEach((id) => {
                     if (id === "decryptedHCALink" && !result.isWholeHCAEncrypted) return;
