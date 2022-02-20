@@ -708,6 +708,11 @@ class HCA {
         this.streamBufferOffset = (this.streamBufferOffset + flushSize) % this.streamPCM.length;
         return data;
     }
+    flushToFloat(flushDuration : number = 3000) : Float32Array[][] {
+        // TODO avoid unnecessary float => PCM => float conversions
+        let pcmData = this.flush(flushDuration);
+        return this.pcmToFloat(pcmData);
+    }
     resetPCMToFloat() : void {
         this.residuePCMBuff = new Uint8Array(0);
     }
@@ -1550,6 +1555,8 @@ if (typeof document === "undefined") {
                     return
                 case "flush":
                     return hcainst.flush.apply(hcainst, msg.data.args);
+                case "flushToFloat":
+                    return hcainst.flushToFloat.apply(hcainst, msg.data.args);
                 case "resetPCMToFloat":
                     hcainst.resetPCMToFloat();
                     return;
@@ -1673,10 +1680,9 @@ if (typeof document === "undefined") {
                             // FIXME burp on 1st (extra) cycle of loop
                             // FIXME crash on 2nd (extra) cycle of loop
                             // FIXME lacks end-of-stream (in finite loop or no loop mode)
-                            this.flush(3000, (data: Uint8Array) => {
-                                this.pcmToFloat(data, (snippets : Float32Array[][]) => {
-                                    this.pcmPlayerNode?.port.postMessage(snippets);
-                                });
+                            this.flushToFloat(3000, (snippets : Float32Array[][]) => {
+                                if (this.pcmPlayerNode)
+                                    this.pcmPlayerNode.port.postMessage(snippets);
                             });
                             break;
                     }
@@ -1736,6 +1742,11 @@ if (typeof document === "undefined") {
         flush(flushDuration : number = 3000, callback: Function) : void {
             this.sendCmd("flush", [flushDuration], (data: Uint8Array) => {
                 callback(data);
+            });
+        }
+        flushToFloat(flushDuration : number = 3000, callback: Function) : void {
+            this.sendCmd("flushToFloat", [flushDuration], (snippets : Float32Array[][]) => {
+                callback(snippets);
             });
         }
         resetPCMToFloat(callback: Function) : void {
