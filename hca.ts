@@ -1482,6 +1482,7 @@ if (typeof document === "undefined") {
 } else {
     // not in worker
     class HCAWorkerCtrl {
+        private selfUrl : URL;
         private cmdQueue : Array<{taskID: number, cmd: string, args: Array<any>}>;
         private resultCallback : Record<number, Function>;
         private lastTaskID = 0;
@@ -1570,10 +1571,11 @@ if (typeof document === "undefined") {
                 console.log(`${text} took ${new Date().getTime() - this.lastTick} ms`);
             });
         }
-        constructor (hcaworker : Worker, errHandlerCallback : Function, key1:any = null, key2:any = 0) {
+        constructor (selfUrl : URL, errHandlerCallback : Function, key1:any = null, key2:any = 0) {
+            this.selfUrl = selfUrl;
             this.cmdQueue = [];
             this.resultCallback = {};
-            this.hcaworker = hcaworker;
+            this.hcaworker = new Worker(selfUrl);
             this.errHandlerCallback = errHandlerCallback;
             this.hcaworker.onmessage = (msg) => this.resultHandler(this, msg);
             this.hcaworker.onerror = (msg) => this.errHandler(this, msg);

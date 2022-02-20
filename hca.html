@@ -187,8 +187,7 @@
                 loop = 0;
                 document.getElementById("loopcountinput").value = 0;
             }
-            let hcaworker = new Worker('hca.js');
-            let hcaworkerctrl = new HCAWorkerCtrl(hcaworker, () => {
+            let hcaworkerctrl = new HCAWorkerCtrl(new URL("hca.js", document.baseURI), () => {
                 decodeinworkerbtn.textContent = "Error! Retry decode in background?";
                 decodeinworkerbtn.disabled = false;
             }, key1, key2);
