@@ -64,6 +64,8 @@ class HCA {
     private streamBlockSampleSize = 0;
     private streamHCAFullLength = 0;
 
+    hcaHeaderParsedCallback : Function = () => {};
+
     streamLoopHCA = new Uint8Array(0);
     streamTailHCA = new Uint8Array(0);
 
@@ -71,6 +73,9 @@ class HCA {
         cycle: 0,
         blockIndex: 0,
     }
+
+    // remaining PCM data which didn't make a full snippet
+    private residuePCMBuff = new Uint8Array(0);
 
     parseKey (key:any) {
         let buff = new Uint8Array(4);
@@ -464,6 +469,11 @@ class HCA {
                     this.streamTailHCA = new Uint8Array((this.format.blockCount - this.loop.end) * this.blockSize);
                     // prepare for 1st (extra) cycle of loop
                     this.streamLoopStatus.blockIndex = this.loop.start;
+                    // notify foreground thread to create audio context
+                    this.hcaHeaderParsedCallback({
+                        channelCount: this.format.channelCount,
+                        sampleRate: this.format.samplingRate,
+                    });
                 }
             }, () => {
                 // strip HCA header
@@ -697,6 +707,60 @@ class HCA {
         if (this.streamBufferUsedLength + flushSize != origStreamBufferUsedLength) throw "unexpected streamBufferUsedLength";
         this.streamBufferOffset = (this.streamBufferOffset + flushSize) % this.streamPCM.length;
         return data;
+    }
+    resetPCMToFloat() : void {
+        this.residuePCMBuff = new Uint8Array(0);
+    }
+    pcmToFloat(incomingPCMData: Uint8Array) : Float32Array[][] {
+        let channelCount = this.format.channelCount;
+        let streamBitDepth = this.streamBitDepth;
+        let sampleSize = this.streamSampleSize;
+        let snippets : Float32Array[][] = [];
+        // copy pcm data, combining last residuePCMBuff with new incoming data
+        let totalLen = this.residuePCMBuff.byteLength + incomingPCMData.byteLength;
+        let truncatedLen = totalLen - (totalLen % (128 * sampleSize));
+        let pcmData = new Uint8Array(truncatedLen);
+        pcmData.set(this.residuePCMBuff);
+        pcmData.set(incomingPCMData.subarray(0, truncatedLen), this.residuePCMBuff.byteLength);
+        this.residuePCMBuff = incomingPCMData.slice(truncatedLen, totalLen);
+        // convert to float32
+        let p = new DataView(pcmData.buffer);
+        for (let s = 0; s * sampleSize < pcmData.byteLength; s += 128) {
+            let snippet = [];
+            for (let c = 0; c < channelCount; c++) {
+                let channel = new Float32Array(128);
+                for (let i = s;  i < s + 128 && i * sampleSize < pcmData.byteLength; i++) {
+                    let f = 0.0;
+                    let offset = (i * channelCount + c) * (streamBitDepth / 8);
+                    switch (streamBitDepth) {
+                        case 8:
+                            f = (p.getUint8(offset) - 0x80) / 0x7F;
+                            break;
+                        case 16:
+                            f = p.getInt16(offset, true) / 0x7FFF;
+                            break;
+                        case 24:
+                            f = p.getInt16(offset + 1, true) * 0x100;
+                            let b = p.getUint8(offset);
+                            if (f < 0) f -= b;
+                            else f += b;
+                            f /= 0x7FFFFF;
+                            break;
+                        case 32:
+                            f = p.getInt32(offset, true) / 0x7FFFFFFF;
+                            break;
+                        default:
+                            console.error("pcmPlayer error: unexpected streamBitDepth");
+                    }
+                    if (f > 1) f = 1;
+                    else if (f < -1) f = -1;
+                    channel[i % 128] = f;
+                }
+                snippet.push(channel);
+            }
+            snippets.push(snippet);
+        }
+        return snippets;
     }
 
     decode(hca : Uint8Array | undefined = this.decrypted, mode = 32, loop = 0, volume = 1.0) : Uint8Array {
@@ -1473,6 +1537,24 @@ if (typeof document === "undefined") {
                     return hcainst.decrypted;
                 case "wholeDecodedWAV":
                     return hcainst.wholeDecodedWAV;
+                case "setupStream":
+                    hcainst.hcaHeaderParsedCallback = (hcaHeaderInfo: Record<string, number>) => {
+                        postMessage({
+                            hcaHeaderInfo: hcaHeaderInfo,
+                        });
+                    }
+                    hcainst.setupStream.apply(hcainst, msg.data.args);
+                    return;
+                case "feed":
+                    hcainst.feed.apply(hcainst, msg.data.args);
+                    return
+                case "flush":
+                    return hcainst.flush.apply(hcainst, msg.data.args);
+                case "resetPCMToFloat":
+                    hcainst.resetPCMToFloat();
+                    return;
+                case "pcmToFloat":
+                    return hcainst.pcmToFloat.apply(hcainst, msg.data.args);
                 default:
                     throw "unknown cmd";
             }
@@ -1486,6 +1568,17 @@ if (typeof document === "undefined") {
         private audioWorkletUrl : URL;
         private cmdQueue : Array<{taskID: number, cmd: string, args: Array<any>}>;
         private resultCallback : Record<number, Function>;
+        private readonly flushSnippetCount = 128;
+        private streamBitDepth = 32;
+        private streamAudioParam : Record<string, number> = {
+            channelCount: 0,
+            sampleRate: 0,
+            streamBitDepth: 0,
+            sampleSize: 0,
+        }
+        private audioCtx : AudioContext | undefined;
+        private pcmPlayerNode : AudioWorkletNode | undefined;
+        private gainNode : GainNode | undefined;
         private lastTaskID = 0;
         hcaworker : Worker;
         errHandlerCallback : Function;
@@ -1500,6 +1593,10 @@ if (typeof document === "undefined") {
             }
         }
         private resultHandler(self : HCAWorkerCtrl, msg : MessageEvent) : void {
+            if (msg.data.hcaHeaderInfo != null) {
+                this.hcaHeaderInfoHandler(self, msg.data.hcaHeaderInfo);
+                return;
+            }
             let taskID = msg.data.taskID;
             for (let i=0; i<self.cmdQueue.length; i++) {
                 if (self.cmdQueue[i].taskID == taskID) {
@@ -1525,9 +1622,69 @@ if (typeof document === "undefined") {
         }
         private errHandler(self : HCAWorkerCtrl, e : any) : void {
             this.hasError = true;
+            this.stopAudioWorklet();
             self.hcaworker.terminate();
             this.errHandlerCallback(e);
             throw e;
+        }
+        private hcaHeaderInfoHandler(self: HCAWorkerCtrl, hcaHeaderInfo: Record<string, number>) : void {
+            // check hcaHeaderInfo
+            let channelCount = hcaHeaderInfo.channelCount;
+            if (channelCount == null || !(channelCount > 0 && channelCount < 16)) {
+                console.error(`hcaHeaderInfoHandler: invalid hcaHeaderInfo.channelCount ${channelCount}`);
+                self.shutdown();
+            }
+            let sampleRate = hcaHeaderInfo.sampleRate;
+            if (sampleRate == null || !(sampleRate > 0 && sampleRate < 384000)) {
+                console.error(`hcaHeaderInfoHandler: invalid hcaHeaderInfo.sampleRate ${sampleRate}`);
+                self.shutdown();
+            }
+            // prepare streamAudioParam
+            for (let key in hcaHeaderInfo) {
+                this.streamAudioParam[key] = hcaHeaderInfo[key];
+            }
+            this.streamAudioParam.streamBitDepth = this.streamBitDepth;
+            this.streamAudioParam.sampleSize = (this.streamBitDepth / 8) * channelCount;
+            // create audio context
+            if (this.audioCtx != null) {
+                this.audioCtx.close();
+            }
+            let audioCtx = this.audioCtx = new AudioContext({
+                latencyHint: "playback",
+                sampleRate: sampleRate,
+            });
+            audioCtx.audioWorklet.addModule(this.audioWorkletUrl).then(() => {
+                this.pcmPlayerNode = new AudioWorkletNode(audioCtx, "pcm-player", {
+                    numberOfInputs: 0,
+                    numberOfOutputs: 1,
+                    outputChannelCount: [channelCount],
+                    //parameterData: paramData,
+                    processorOptions: {
+                        streamAudioParam: this.streamAudioParam
+                    }
+                });
+                this.resetPCMToFloat(() => {});
+                this.pcmPlayerNode.port.onmessage = (ev) => {
+                    if (ev.data == null) return;
+                    switch (ev.data.cmd) {
+                        case "flush":
+                            this.feed(new Uint8Array(0));
+                            // FIXME set flushDuration to (like) 1000 or smaller will crash the worker
+                            // FIXME burp on 1st (extra) cycle of loop
+                            // FIXME crash on 2nd (extra) cycle of loop
+                            // FIXME lacks end-of-stream (in finite loop or no loop mode)
+                            this.flush(3000, (data: Uint8Array) => {
+                                this.pcmToFloat(data, (snippets : Float32Array[][]) => {
+                                    this.pcmPlayerNode?.port.postMessage(snippets);
+                                });
+                            });
+                            break;
+                    }
+                }
+                this.gainNode = audioCtx.createGain();
+                this.pcmPlayerNode.connect(this.gainNode);
+                this.gainNode.connect(audioCtx.destination);
+            });
         }
         sendCmdList(cmdlist : Array<{cmd: string, args: Array<any>, callback: Function}>) : void {
             for (let i=0; i<cmdlist.length; i++) {
@@ -1561,8 +1718,56 @@ if (typeof document === "undefined") {
                 });
             });
         }
+        // streaming support
+        setupStream(streamBitDepth = 32, streamLoop : boolean | number = true, streamVolume = 1.0, streamBufferDuration = 2000) : void
+        {
+            switch (streamBitDepth) {
+                case 8: case 16: case 24: case 32:
+                    break;
+                case 0: default:
+                    streamBitDepth = 32;
+            }
+            this.streamBitDepth = streamBitDepth;
+            this.sendCmd("setupStream", [streamBitDepth, streamLoop, streamVolume, streamBufferDuration], () => {});
+        }
+        feed(snippet: Uint8Array) : void {
+            this.sendCmd("feed", [snippet], () => {});
+        }
+        flush(flushDuration : number = 3000, callback: Function) : void {
+            this.sendCmd("flush", [flushDuration], (data: Uint8Array) => {
+                callback(data);
+            });
+        }
+        resetPCMToFloat(callback: Function) : void {
+            this.sendCmd("resetPCMToFloat", [], () => {
+                callback();
+            });
+        }
+        pcmToFloat(incomingPCMData : Uint8Array, callback: Function) : void {
+            this.sendCmd("pcmToFloat", [incomingPCMData], (snippets : Float32Array[][]) => {
+                callback(snippets);
+            });
+        }
+        stopAudioWorklet() : void {
+            if (this.pcmPlayerNode) {
+                this.pcmPlayerNode.disconnect();
+                this.pcmPlayerNode = undefined;
+                // FIXME audio worklet still seems to exist in dev panel of browser
+            }
+            if (this.gainNode) {
+                this.gainNode.disconnect();
+                this.gainNode = undefined;
+            }
+            if (this.audioCtx) {
+                this.audioCtx.close();
+                this.audioCtx = undefined;
+            }
+        }
         shutdown() : void {
-            this.sendCmd("nop", [], () => this.hcaworker.terminate());
+            this.sendCmd("nop", [], () => {
+                this.stopAudioWorklet();
+                this.hcaworker.terminate();
+            });
         }
         tick() : void {
             this.sendCmd("nop", [], () => this.lastTick = new Date().getTime());
