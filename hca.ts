@@ -606,28 +606,35 @@ class HCA {
                     else if (f < -1) f = -1;
                     switch (mode) {
                         case 8:
+                            // must be unsigned
                             p.setUint8(ftell, f * 0x7F + 0x80);
                             ftell += 1;
-                        break;
+                            break;
                         case 16:
-                            p.setUint16(ftell, f * 0x7FFF, true);
+                            // for above 8-bit integer, little-endian signed integer is used
+                            // (setUint16/setInt16 actually doesn't seem to make any difference here)
+                            p.setInt16(ftell, f * 0x7FFF, true);
                             ftell += 2;
-                        break;
+                            break;
                         case 24:
+                            // there's no setInt24, write 3 bytes with setUint8 respectively
                             f *= 0x7FFFFF;
                             p.setUint8(ftell    , f       & 0xFF);
                             p.setUint8(ftell + 1, f >>  8 & 0xFF);
                             p.setUint8(ftell + 2, f >> 16 & 0xFF);
                             ftell += 3;
-                        break;
+                            break;
                         case 32:
-                            p.setUint32(ftell, f * 0x7FFFFFFF, true);
+                            p.setInt32(ftell, f * 0x7FFFFFFF, true);
                             ftell += 4;
-                        break;
+                            break;
                         case 0:
-                        default:
-                            writer.set(new Uint8Array(new Float32Array([f]).buffer), ftell);
+                            // float
+                            p.setFloat32(ftell, f, true);
                             ftell += 4;
+                            break;
+                        default:
+                            throw "unknown mode";
                     }
                 }
             }
