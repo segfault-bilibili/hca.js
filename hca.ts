@@ -1507,46 +1507,94 @@ declare function registerProcessor(
 ): undefined;
 
 if (typeof document === "undefined") {
-    // running in worker
-    var hcainst : HCA = new HCA();
-    onmessage = function (msg : MessageEvent) {
-        function handleMsg(msg : MessageEvent) {
-            switch (msg.data.cmd) {
-                case "nop":
-                    return;
-                case "setDecryptionKey":
-                    hcainst = new HCA(msg.data.args[0], msg.data.args[1]);
-                    return;
-                case "load":
-                    hcainst.load(msg.data.args[0]);
-                    return;
-                case "decode":
-                    return hcainst.decode.apply(hcainst, msg.data.args);
-                case "isWholeHCAEncrypted":
-                    return hcainst.isWholeHCAEncrypted;
-                case "origin":
-                    return hcainst.origin;
-                case "decrypted":
-                    return hcainst.decrypted;
-                case "wholeDecodedWAV":
-                    return hcainst.wholeDecodedWAV;
-                default:
-                    throw "unknown cmd";
+    if (typeof onmessage === "undefined") {
+        // running in audio worklet
+        class pcmPlayer extends AudioWorkletProcessor {
+            private lastRequestFlushTime = new Date().getTime();
+            private readonly requestFlushInterval = 200; // in milliseconds
+            private readonly flushThreshold = 50; // in milliseconds
+            private streamAudioParam: Record<string, number> = {
+                channelCount: 0,
+                sampleRate: 0,
+                streamBitDepth: 0,
+                sampleSize: 0,
+            }
+            // array of snippets, a snippet consists of multiple (generally two) channels, a channel consists of 128 samples
+            private snippets: Float32Array[][] = [];
+            constructor (options: AudioWorkletNodeOptions | undefined) {
+                super();
+                if (options == null) return;
+                for (let key in options.processorOptions.streamAudioParam) {
+                    this.streamAudioParam[key] = options.processorOptions.streamAudioParam[key];
+                }
+                this.port.onmessage = (e) => {
+                    let newSnippets: Float32Array[][] = e.data;
+                    newSnippets.forEach((snippet: Float32Array[]) => this.snippets.push(snippet));
+                }
+            }
+            process(inputs: Float32Array[][], outputs: Float32Array[][], parameters: AudioWorkletNodeOptions) {
+                const output = outputs[0];
+                let snippet: Float32Array[] | undefined = this.snippets.shift();
+                if (snippet != null) {
+                    for (let c = 0; c < output.length && c < snippet.length; c++) {
+                        output[c].set(snippet[c]);
+                    }
+                }
+                if (this.snippets.length * 128 <= this.flushThreshold / 1000 * this.streamAudioParam.sampleRate) {
+                    let time = new Date().getTime();
+                    if (time - this.lastRequestFlushTime > this.requestFlushInterval) {
+                        this.port.postMessage({cmd: "flushToSnippets"});
+                        this.lastRequestFlushTime = time;
+                    }
+                }
+                return true;
             }
         }
-        this.postMessage({taskID: msg.data.taskID, result: handleMsg(msg)});
+        registerProcessor("pcm-player", pcmPlayer);
+    } else {
+        // running in worker
+        var hcainst : HCA = new HCA();
+        onmessage = function (msg : MessageEvent) {
+            function handleMsg(msg : MessageEvent) {
+                switch (msg.data.cmd) {
+                    case "nop":
+                        return;
+                    case "setDecryptionKey":
+                        hcainst = new HCA(msg.data.args[0], msg.data.args[1]);
+                        return;
+                    case "load":
+                        hcainst.load(msg.data.args[0]);
+                        return;
+                    case "decode":
+                        return hcainst.decode.apply(hcainst, msg.data.args);
+                    case "isWholeHCAEncrypted":
+                        return hcainst.isWholeHCAEncrypted;
+                    case "origin":
+                        return hcainst.origin;
+                    case "decrypted":
+                        return hcainst.decrypted;
+                    case "wholeDecodedWAV":
+                        return hcainst.wholeDecodedWAV;
+                    default:
+                        throw "unknown cmd";
+                }
+            }
+            this.postMessage({taskID: msg.data.taskID, result: handleMsg(msg)});
+        }
     }
 } else {
     // not in worker
 }
 
-// control background Worker
+// control background Worker/AudioWorklet
 class HCAWorkerCtrl {
     private selfUrl : URL;
     private cmdQueue : Array<{taskID: number, cmd: string, args: Array<any>}>;
     private resultCallback : Record<number, Function>;
     private lastTaskID = 0;
-    hcaworker : Worker;
+    private hcaworker : Worker;
+    private audioCtx : AudioContext | undefined
+    private pcmPlayerNode : AudioWorkletNode | undefined;
     errHandlerCallback : Function;
     private idle = true;
     private hasError = false;
