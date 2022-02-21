@@ -563,7 +563,26 @@ class HCA {
         }
     }
 
-    decodeBlock(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) {
+    decodeBlock(block: Uint8Array, mode = 32, volume = 1.0,
+        writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined): Uint8Array
+    {
+        switch (mode) {
+            case 0: // float
+            case 8: case 16: case 24: case 32: // integer
+                break;
+            default:
+                mode = 32;
+        }
+        if (writer == null) {
+            writer = new Uint8Array(0x400 * this.format.channelCount * mode / 8);
+            if (ftell == null) {
+                ftell = 0;
+            }
+        } else {
+            if (ftell == null) {
+                throw "ftell == null";
+            }
+        }
         let data = new clData(this.blockSize, block);
         let magic = data.read(16);
         if (magic == 0xFFFF) {
