@@ -40,7 +40,6 @@ class HCA {
     origin = new Uint8Array(0);
     decrypted = new Uint8Array(0);
     wave = new Uint8Array(0);
-    channel: Array<stChannel> = [];
 
     parseKey (key:any) {
         let buff = new Uint8Array(4);
@@ -499,14 +498,14 @@ class HCA {
         p.setUint32(ftell, data.id, true);
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
-        this.initializeDecoder();
+        let internalState = this.initializeDecoder();
         for (let l = 0; l < this.format.blockCount; ++l) {
             let startOffset = this.dataOffset + this.blockSize * l;
             let block = hca.subarray(startOffset, startOffset + this.blockSize);
-            let wavebuff = this.decodeBlock(block, mode, volume, writer, ftell);
+            this.decodeBlock(internalState, block, mode);
+            let wavebuff = this.writeToPCM(internalState, mode, volume, writer, ftell);
             ftell += wavebuff.length;
         }
-        this.channel = [];
         if (this.loop.hasLoop && loop) {
             let wavDataOffset = writer.length - data.size;
             // copy "tail"
@@ -525,7 +524,7 @@ class HCA {
         }
         return this.wave = writer;
     }
-    initializeDecoder() {
+    initializeDecoder(): stChannel[] {
         let r = new Uint8Array(0x10);
         let b = Math.floor(this.format.channelCount / this.compParam[2]);
         if (this.compParam[6] && b > 1) {
@@ -554,16 +553,40 @@ class HCA {
                 default:
             }
         }
+        let internalState: stChannel[] = []
         for (let i = 0; i < this.format.channelCount; ++i) {
             let c = new stChannel();
             c.type = r[i];
             c.value3 = c.value.subarray(this.compParam[5] + this.compParam[6]);
             c.count = this.compParam[5] + (r[i] != 2 ? this.compParam[6] : 0);
-            this.channel.push(c);
+            internalState.push(c);
         }
+        return internalState;
     }
 
-    decodeBlock(block: Uint8Array, mode = 32, volume = 1.0,
+    decodeBlock(internalState: stChannel[], block: Uint8Array, mode = 32): void
+    {
+        switch (mode) {
+            case 0: // float
+            case 8: case 16: case 24: case 32: // integer
+                break;
+            default:
+                mode = 32;
+        }
+        let data = new clData(this.blockSize, block);
+        let magic = data.read(16);
+        if (magic == 0xFFFF) {
+            let a = (data.read(9) << 8) - data.read(7);
+            for (let i = 0; i < this.format.channelCount; i++) internalState[i].Decode1(data, this.compParam[8], a);
+            for (let i = 0; i<8; i++) {
+                for (let j = 0; j < this.format.channelCount; j++) internalState[j].Decode2(data);
+                for (let j = 0; j < this.format.channelCount; j++) internalState[j].Decode3(this.compParam[8], this.compParam[7], this.compParam[6] + this.compParam[5], this.compParam[4]);
+                for (let j = 0; j < this.format.channelCount - 1; j++) internalState[j].Decode4(i, this.compParam[4] - this.compParam[5], this.compParam[5], this.compParam[6], internalState[j + 1]);
+                for (let j = 0; j < this.format.channelCount; j++) internalState[j].Decode5(i);
+            }
+        }
+    }
+    writeToPCM(internalState: stChannel[], mode = 32, volume = 1.0,
         writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined): Uint8Array
     {
         switch (mode) {
@@ -573,6 +596,9 @@ class HCA {
             default:
                 mode = 32;
         }
+        if (volume > 1) volume = 1;
+        else if (volume < 0) volume = 0;
+        // create new writer if not specified
         if (writer == null) {
             writer = new Uint8Array(0x400 * this.format.channelCount * mode / 8);
             if (ftell == null) {
@@ -583,25 +609,13 @@ class HCA {
                 throw "ftell == null";
             }
         }
-        let data = new clData(this.blockSize, block);
-        let magic = data.read(16);
-        if (magic == 0xFFFF) {
-            let a = (data.read(9) << 8) - data.read(7);
-            for (let i = 0; i < this.format.channelCount; i++) this.channel[i].Decode1(data, this.compParam[8], a);
-            for (let i = 0; i<8; i++) {
-                for (let j = 0; j < this.format.channelCount; j++) this.channel[j].Decode2(data);
-                for (let j = 0; j < this.format.channelCount; j++) this.channel[j].Decode3(this.compParam[8], this.compParam[7], this.compParam[6] + this.compParam[5], this.compParam[4]);
-                for (let j = 0; j < this.format.channelCount - 1; j++) this.channel[j].Decode4(i, this.compParam[4] - this.compParam[5], this.compParam[5], this.compParam[6], this.channel[j + 1]);
-                for (let j = 0; j < this.format.channelCount; j++) this.channel[j].Decode5(i);
-            }
-        }
-        //write decoded data into writer
+        // write decoded data into writer
         let p = new DataView(writer.buffer);
         let ftellBegin = ftell;
         for (let i = 0; i<8; i++) {
             for (let j = 0; j<0x80; j++) {
                 for (let k = 0; k < this.format.channelCount; k++) {
-                    let f = this.channel[k].wave[i][j] * volume;
+                    let f = internalState[k].wave[i][j] * volume;
                     if (f > 1) f = 1;
                     else if (f < -1) f = -1;
                     switch (mode) {
@@ -641,10 +655,10 @@ class HCA {
         }
         return new Uint8Array(writer.buffer, ftellBegin, ftell - ftellBegin);
     }
-    decryptAndDecodeBlock(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) {
+    decryptAndDecodeBlock(internalState: stChannel[], block: Uint8Array, mode = 32) {
         let decryptedBlock = block.slice(0);
         this.mask(decryptedBlock, 0, this.blockSize - 2);
-        return this.decodeBlock(decryptedBlock, mode, volume, writer, ftell);
+        this.decodeBlock(internalState, block, mode);
     }
 }
 
