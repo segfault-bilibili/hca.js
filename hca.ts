@@ -1009,6 +1009,21 @@ class HCA {
         }
         return new Uint8Array(writer.buffer, ftellBegin, ftell - ftellBegin);
     }
+    floatToSnippets() : Float32Array[][] {
+        // prepare snippets for AudioWorklet
+        // 0x400 samples => 8 snippets, each snippet contains 128 (0x80) samples
+        let snippets: Float32Array[][] = [];
+        for (let i = 0; i<8; i++) {
+            let snippet: Float32Array[] = [];
+            for (let c = 0; c < this.format.channelCount; c++) {
+                let channel = new Float32Array(0x80);
+                channel.set(this.channel[c].wave[i]);
+                snippet.push(channel);
+            }
+            snippets.push(snippet);
+        }
+        return snippets;
+    }
 }
 
 class stChannel {
