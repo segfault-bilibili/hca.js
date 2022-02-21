@@ -4,6 +4,8 @@ for (let i = 0; i < 64; i++) scaling_table[i] = Math.pow(2, (i - 63) * 53.0 / 12
 for (let i = 2; i < 127; i++) scale_conversion_table[i] = Math.pow(2, (i - 64) * 53.0 / 128.0);
 
 class HCA {
+    key1: Uint32Array;
+    key2: Uint32Array;
     static scaling_table = scaling_table;
     static scale_conversion_table = scale_conversion_table;
     static range_table = new Float64Array([
@@ -12,8 +14,6 @@ class HCA {
         2.0 / 31,  2.0 / 63,   2.0 / 127,  2.0 / 255,
         2.0 / 511, 2.0 / 1023, 2.0 / 2047, 2.0 / 4095
     ]);
-    private _table = new Uint8Array(0x100);
-    private _table1 = new Uint8Array(0x100);
     version = "";
     dataOffset = 0;
     format = {
@@ -33,7 +33,11 @@ class HCA {
         end: 0,
         count: 0
     }
-    cipher = 0;
+    ciph = {
+        hasCipher: false,
+        type: 0,
+    }
+    cipher = 0; // same as ciph.type
     rva = 0.0;
     comment = "";
 
@@ -62,7 +66,6 @@ class HCA {
         }
     }
     constructor (key1:any = null, key2:any = 0) {
-        this.init1();
         if (key1 === null) {
             key1 = this.parseKey(0x01395C51);
             key2 = this.parseKey(0x00000000);
@@ -77,18 +80,20 @@ class HCA {
             key1 = this.parseKey(key1);
             key2 = this.parseKey(key2);
         }
-        this.init56(key1, key2);
+        this.key1 = key1;
+        this.key2 = key2;
     }
-    private init1() {
+    private init1(_table: Uint8Array): Uint8Array {
         for (let i = 1, v = 0; i < 0xFF; i++) {
             v = (v * 13 + 11) & 0xFF;
             if (v == 0 || v == 0xFF)v = (v * 13 + 11) & 0xFF;
-            this._table1[i] = v;
+            _table[i] = v;
         }
-        this._table1[0] = 0;
-        this._table1[0xFF] = 0xFF;
+        _table[0] = 0;
+        _table[0xFF] = 0xFF;
+        return _table;
     }
-    private init56(key1: Uint32Array, key2: Uint32Array) {
+    private init56(_table: Uint8Array, key1: Uint32Array, key2: Uint32Array): Uint8Array {
         let t1 = new Uint8Array(8);
         if (!key1[0])key2[0]--;
         key1[0]--;
@@ -116,10 +121,11 @@ class HCA {
         for (let i = 0, v = 0, t = 1; i < 0x100; i++) {
             v = (v + 0x11) & 0xFF;
             let a = t3[v];
-            if (a != 0 && a != 0xFF) this._table[t++] = a;
+            if (a != 0 && a != 0xFF) _table[t++] = a;
         }
-        this._table[0] = 0;
-        this._table[0xFF] = 0xFF;
+        _table[0] = 0;
+        _table[0xFF] = 0xFF;
+        return _table;
     }
     private createTable(r: Uint8Array, key: number) {
         let mul = ((key & 1) << 3) | 5;
@@ -157,8 +163,8 @@ class HCA {
             sum = ((sum << 8) ^ HCA._v[(sum >> 8) ^ data[i++]]) & 0x0000ffff;
         return sum & 0x0000ffff;
     }
-    mask(block: Uint8Array, offset: number, size: number) {
-        for (let i = 0; i < size; i++) block[offset + i] = this._table[block[offset + i]];
+    mask(_table: Uint8Array, block: Uint8Array, offset: number, size: number) {
+        for (let i = 0; i < size; i++) block[offset + i] = _table[block[offset + i]];
     }
     private getSign(raw: DataView, offset = 0, resign = false) {
         let magic = raw.getUint32(offset, true);
@@ -169,100 +175,48 @@ class HCA {
         let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
         return String.fromCharCode.apply(null, hex);
     }
-    decrypt(hca: Uint8Array) {
-        let p = new DataView(hca.buffer, 0, 8);
-        let head = this.getSign(p, 0, true);
-        const version = {
-            main: p.getUint8(4),
-            sub:  p.getUint8(5)
-        }
-        this.version = version.main + '.' + version.sub;
-        this.dataOffset = p.getUint16(6);
-        this.loop.hasLoop = false;
-        p = new DataView(hca.buffer, 0, this.dataOffset);
-        let ftell = 8;
-        while (ftell < this.dataOffset - 2) {
-            let sign = this.getSign(p, ftell, true);
-            if (sign == "pad\0") break;
-            switch (sign) {
-                case "fmt\0":
-                    this.format.channelCount = p.getUint8(ftell + 4);
-                    this.format.samplingRate = p.getUint32(ftell + 4) & 0x00ffffff;
-                    this.format.blockCount = p.getUint32(ftell + 8);
-                    this.format.muteHeader = p.getUint16(ftell + 12);
-                    this.format.muteFooter = p.getUint16(ftell + 14);
-                    ftell += 16;
-                    break;
-                case "comp":
-                    this.blockSize = p.getUint16(ftell + 4);
-                    this.bps = this.format.samplingRate * this.blockSize / 128000.0;
-                    this.compParam =  new Uint8Array(hca.buffer, ftell + 6, 9);
-                    ftell += 16;
-                    break;
-                case "dec\0":
-                    this.blockSize = p.getUint16(ftell + 4);
-                    this.bps = this.format.samplingRate * this.blockSize / 128000.0;
-                    this.compParam[0] = p.getUint8(ftell + 6);
-                    this.compParam[1] = p.getUint8(ftell + 7);
-                    this.compParam[2] = p.getUint8(ftell + 11);
-                    this.compParam[3] = p.getUint8(ftell + 10);
-                    this.compParam[4] = p.getUint8(ftell + 8) + 1;
-                    this.compParam[5] = (p.getUint8(ftell + 12) ? p.getUint8(ftell + 9) : p.getUint8(ftell + 8)) + 1;
-                    this.compParam[6] = this.compParam[4] - this.compParam[5];
-                    this.compParam[7] = 0;
-                    ftell += 13;
-                    break;
-                case "vbr\0":
-                    ftell += 8;
-                    break;
-                case "ath\0":
-                    this.ath = p.getUint16(ftell + 4);
-                    ftell += 6;
-                    break;
-                case "loop":
-                    this.loop.hasLoop = true;
-                    this.loop.start = p.getUint32(ftell + 4);
-                    this.loop.end = p.getUint32(ftell + 8);
-                    this.loop.count = p.getUint16(ftell + 12);
-                    ftell += 16;
-                    break;
-                case "ciph":
-                    this.cipher = p.getUint16(ftell + 4);
-                    p.setUint16(ftell + 4, 0);
-                    ftell += 6;
-                    break;
-                case "rva\0":
-                    this.rva = p.getFloat32(ftell + 4);
-                    ftell += 8;
-                    break;
-                case "comm":
-                    let len = p.getUint8(ftell + 4);
-                    let jisdecoder = new TextDecoder('shift-jis');
-                    this.comment = jisdecoder.decode(hca.slice(ftell + 5, ftell + 5 + len));
-                    break;
-                default: break;
-            }
-        }
-        this.compParam[2] = this.compParam[2] || 1;
-        let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
-        let _b = this.compParam[7];
-        this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
-
-        p.setUint16(this.dataOffset - 2, this.crc16(hca, this.dataOffset - 2));
-        for (let i = 0; i < this.format.blockCount; ++i) {
-            ftell = this.dataOffset + this.blockSize * i;
-            this.mask(hca, ftell, this.blockSize - 2);
-            p = new DataView(hca.buffer, ftell, this.blockSize);
-            p.setUint16(
-                this.blockSize - 2,
-                this.crc16(hca.slice(ftell), this.blockSize - 2)
-            );
-        }
-        return hca
+    isHCAHeaderEncrypted(hca: Uint8Array): boolean {
+        if (hca[0] & 0x80 || hca[1] & 0x80 || hca[2] & 0x80) return true;
+        else return false;
     }
-    info(hca: Uint8Array) {
+    decrypt(hca: Uint8Array): Uint8Array {
+        // in-place decryption
+        // parse & decrypt (in-place) header
+        this.info(hca, this.isHCAHeaderEncrypted(hca)); // throws "Not a HCA file" if mismatch
+        if (!this.ciph.hasCipher) {
+            return hca; // not encrypted
+        }
+        let _table = new Uint8Array(0x100);
+        switch (this.ciph.type) {
+            case 0:
+                // not encrypted
+                return hca;
+            case 1:
+                // encrypted with "no key"
+                this.init1(_table);
+                break;
+            case 0x38:
+                // encrypted with keys - will yield incorrect waveform with incorrect keys!
+                this.init56(_table, this.key1, this.key2);
+                break;
+        }
+        for (let i = 0; i < this.format.blockCount; ++i) {
+            // decrypt block
+            let ftell = this.dataOffset + this.blockSize * i;
+            this.mask(_table, hca, ftell, this.blockSize - 2);
+            // recalculate checksum
+            let p = new DataView(hca.buffer, ftell + this.blockSize - 2, 2);
+            let newCrc16 = this.crc16(hca.subarray(ftell, ftell + this.blockSize - 2), this.blockSize - 2);
+            p.setUint16(0, newCrc16);
+        }
+        return hca;
+    }
+    info(hca: Uint8Array, decryptInPlace: boolean = false): void {
         let p = new DataView(hca.buffer, 0, 8);
-        let head = this.getSign(p, 0);
+        let head = this.getSign(p, 0, decryptInPlace);
+        if (head !== "HCA\0") {
+            throw "Not a HCA file";
+        }
         const version = {
             main: p.getUint8(4),
             sub:  p.getUint8(5)
@@ -273,7 +227,7 @@ class HCA {
         p = new DataView(hca.buffer, 0, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
-            let sign = this.getSign(p, ftell);
+            let sign = this.getSign(p, ftell, decryptInPlace);
             if (sign == "pad\0") break;
             switch (sign) {
                 case "fmt\0":
@@ -318,7 +272,8 @@ class HCA {
                     ftell += 16;
                     break;
                 case "ciph":
-                    this.cipher = p.getUint16(ftell + 4);
+                    this.ciph.hasCipher = true;
+                    this.cipher = this.ciph.type = p.getUint16(ftell + 4);
                     p.setUint16(ftell + 4, 0);
                     ftell += 6;
                     break;
@@ -338,17 +293,21 @@ class HCA {
         let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
         let _b = this.compParam[7];
         this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
+        if (decryptInPlace) {
+            // recalculate checksum
+            let newCrc16 = this.crc16(hca, this.dataOffset - 2);
+            p.setUint16(this.dataOffset - 2, newCrc16);
+        }
     }
     load(hca: Uint8Array) {
-        if (this.getSign(new DataView(hca.buffer)) == "HCA\0") {
-            this.origin = new Uint8Array(hca);
-            if (hca[0] & 0x80 || hca[1] & 0x80 || hca[2] & 0x80) {
-                this.decrypted = this.decrypt(hca.slice(0));
-            } else {
-                this.decrypted = this.origin;
-                this.info(hca);
-            }
-        } else throw "Not a HCA file";
+        if (this.isHCAHeaderEncrypted(hca)) {
+            let newBuff = hca.slice(0);
+            this.decrypted = this.decrypt(newBuff); // calls "info" inside, throws "Not a HCA file" if mismatch
+        } else {
+            this.info(hca);
+            this.decrypted = hca;
+        }
+        this.origin = hca;
     }
 
     decode(hca = this.decrypted, mode = 32, loop = 0, volume = 1.0) {
@@ -686,11 +645,6 @@ class HCA {
             }
         }
         return new Uint8Array(writer.buffer, ftellBegin, ftell - ftellBegin);
-    }
-    decryptAndDecodeBlock(internalState: stChannel[], block: Uint8Array, mode = 32) {
-        let decryptedBlock = block.slice(0);
-        this.mask(decryptedBlock, 0, this.blockSize - 2);
-        this.decodeBlock(internalState, block, mode);
     }
 }
 
