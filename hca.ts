@@ -938,16 +938,23 @@ class HCA {
     decodeBlock(block: Uint8Array, mode = 32, volume = 1.0,
         writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined) : Uint8Array
     {
+        switch (mode) {
+            case 8: case 16: case 24: case 32:
+                break;
+            case 0: default:
+                mode = 32;
+        }
+        if (volume < 0) volume = 0;
+        else if (volume > 1) volume = 1;
         if (writer == undefined) {
-            switch (mode) {
-                case 8: case 16: case 24: case 32:
-                    break;
-                case 0: default:
-                    mode = 32;
-            }
             writer = new Uint8Array(0x400 * this.format.channelCount * mode / 8);
         }
         if (ftell == undefined) ftell = 0;
+        this.decodeBlockToFloat(block, mode, volume, writer, ftell);
+        return this.floatToPCM(mode, volume, writer, ftell);
+    }
+    decodeBlockToFloat(block: Uint8Array, mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) : void
+    {
         let data = new clData(this.blockSize, block);
         let magic = data.read(16);
         if (magic == 0xFFFF) {
@@ -960,7 +967,10 @@ class HCA {
                 for (let j = 0; j < this.format.channelCount; j++) this.channel[j].Decode5(i);
             }
         }
-        //write decoded data into writer
+    }
+    floatToPCM(mode = 32, volume = 1.0, writer: Uint8Array, ftell: number) : Uint8Array
+    {
+        // write decoded data into writer
         let p = new DataView(writer.buffer);
         let ftellBegin = ftell;
         for (let i = 0; i<8; i++) {
