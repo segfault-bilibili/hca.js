@@ -352,6 +352,15 @@ class HCA {
     }
 
     decode(hca = this.decrypted, mode = 32, loop = 0, volume = 1.0) {
+        switch (mode) {
+            case 0: // float
+            case 8: case 16: case 24: case 32: // integer
+                break;
+            default:
+                mode = 32;
+        }
+        if (volume > 1) volume = 1;
+        else if (volume < 0) volume = 0;
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
