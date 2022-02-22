@@ -432,18 +432,18 @@ class HCA {
         p.setUint32(ftell, data.id, true);
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
-        let internalState = this.initializeDecoder(info);
-        let internalStateAtLoopEnd: stChannel[] = [];
+        let channel = this.initializeDecoder(info);
+        let channelAtLoopEnd: stChannel[] = [];
         for (let l = 0; l < info.format.blockCount; ++l) {
             let startOffset = info.dataOffset + info.blockSize * l;
             let block = hca.subarray(startOffset, startOffset + info.blockSize);
-            this.decodeBlock(info, internalState, block, mode);
-            let wavebuff = this.writeToPCM(info, internalState, mode, volume, writer, ftell);
+            this.decodeBlock(info, channel, block, mode);
+            let wavebuff = this.writeToPCM(info, channel, mode, volume, writer, ftell);
             ftell += wavebuff.length;
             if (info.loop.hasLoop && loop && l == info.loop.end - 1) {
                 // save the internal state at this moment, in order to rework the "seam"
-                for (let c of internalState) {
-                    internalStateAtLoopEnd.push(c.clone());
+                for (let c of channel) {
+                    channelAtLoopEnd.push(c.clone());
                 }
             }
         }
@@ -451,12 +451,12 @@ class HCA {
         let seamBuff  = new Uint8Array(0);
         if (info.loop.hasLoop && loop) {
             // rewind the internal state
-            internalState = internalStateAtLoopEnd;
+            channel = channelAtLoopEnd;
             // re-decode
             let startOffset = info.dataOffset + info.blockSize * info.loop.start;
             let block = hca.subarray(startOffset, startOffset + info.blockSize);
-            this.decodeBlock(info, internalState, block, mode);
-            seamBuff = this.writeToPCM(info, internalState, mode, volume);
+            this.decodeBlock(info, channel, block, mode);
+            seamBuff = this.writeToPCM(info, channel, mode, volume);
         }
         // decoding done, then just copy looping part
         if (info.loop.hasLoop && loop) {
@@ -510,18 +510,18 @@ class HCA {
                 default:
             }
         }
-        let internalState: stChannel[] = []
+        let channel: stChannel[] = []
         for (let i = 0; i < info.format.channelCount; ++i) {
             let c = new stChannel();
             c.type = r[i];
             c.value3 = c.value.subarray(info.compParam[5] + info.compParam[6]);
             c.count = info.compParam[5] + (r[i] != 2 ? info.compParam[6] : 0);
-            internalState.push(c);
+            channel.push(c);
         }
-        return internalState;
+        return channel;
     }
 
-    decodeBlock(info: hcaInfo, internalState: stChannel[], block: Uint8Array, mode = 32): void
+    decodeBlock(info: hcaInfo, channel: stChannel[], block: Uint8Array, mode = 32): void
     {
         switch (mode) {
             case 0: // float
@@ -534,16 +534,16 @@ class HCA {
         let magic = data.read(16);
         if (magic == 0xFFFF) {
             let a = (data.read(9) << 8) - data.read(7);
-            for (let i = 0; i < info.format.channelCount; i++) internalState[i].Decode1(data, info.compParam[8], a);
+            for (let i = 0; i < info.format.channelCount; i++) channel[i].Decode1(data, info.compParam[8], a);
             for (let i = 0; i<8; i++) {
-                for (let j = 0; j < info.format.channelCount; j++) internalState[j].Decode2(data);
-                for (let j = 0; j < info.format.channelCount; j++) internalState[j].Decode3(info.compParam[8], info.compParam[7], info.compParam[6] + info.compParam[5], info.compParam[4]);
-                for (let j = 0; j < info.format.channelCount - 1; j++) internalState[j].Decode4(i, info.compParam[4] - info.compParam[5], info.compParam[5], info.compParam[6], internalState[j + 1]);
-                for (let j = 0; j < info.format.channelCount; j++) internalState[j].Decode5(i);
+                for (let j = 0; j < info.format.channelCount; j++) channel[j].Decode2(data);
+                for (let j = 0; j < info.format.channelCount; j++) channel[j].Decode3(info.compParam[8], info.compParam[7], info.compParam[6] + info.compParam[5], info.compParam[4]);
+                for (let j = 0; j < info.format.channelCount - 1; j++) channel[j].Decode4(i, info.compParam[4] - info.compParam[5], info.compParam[5], info.compParam[6], channel[j + 1]);
+                for (let j = 0; j < info.format.channelCount; j++) channel[j].Decode5(i);
             }
         }
     }
-    writeToPCM(info: hcaInfo, internalState: stChannel[], mode = 32, volume = 1.0,
+    writeToPCM(info: hcaInfo, channel: stChannel[], mode = 32, volume = 1.0,
         writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined): Uint8Array
     {
         switch (mode) {
@@ -572,7 +572,7 @@ class HCA {
         for (let i = 0; i<8; i++) {
             for (let j = 0; j<0x80; j++) {
                 for (let k = 0; k < info.format.channelCount; k++) {
-                    let f = internalState[k].wave[i][j] * volume;
+                    let f = channel[k].wave[i][j] * volume;
                     if (f > 1) f = 1;
                     else if (f < -1) f = -1;
                     switch (mode) {
