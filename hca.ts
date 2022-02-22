@@ -199,6 +199,8 @@ class HCA {
                 // encrypted with keys - will yield incorrect waveform with incorrect keys!
                 this.init56(_table, this.key1, this.key2);
                 break;
+            default:
+                throw "unknown ciph.type";
         }
         for (let i = 0; i < this.format.blockCount; ++i) {
             // decrypt block
