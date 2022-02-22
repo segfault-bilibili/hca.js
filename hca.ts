@@ -3,17 +3,7 @@ const scale_conversion_table = new Float64Array(128);
 for (let i = 0; i < 64; i++) scaling_table[i] = Math.pow(2, (i - 63) * 53.0 / 128.0 + 3.5);
 for (let i = 2; i < 127; i++) scale_conversion_table[i] = Math.pow(2, (i - 64) * 53.0 / 128.0);
 
-class HCA {
-    key1: Uint32Array;
-    key2: Uint32Array;
-    static scaling_table = scaling_table;
-    static scale_conversion_table = scale_conversion_table;
-    static range_table = new Float64Array([
-        0,         2.0 / 3,    2.0 / 5,    2.0 / 7,
-        2.0 / 9,   2.0 / 11,   2.0 / 13,   2.0 / 15,
-        2.0 / 31,  2.0 / 63,   2.0 / 127,  2.0 / 255,
-        2.0 / 511, 2.0 / 1023, 2.0 / 2047, 2.0 / 4095
-    ]);
+class hcaInfo {
     version = "";
     dataOffset = 0;
     format = {
@@ -40,6 +30,116 @@ class HCA {
     cipher = 0; // same as ciph.type
     rva = 0.0;
     comment = "";
+    private getSign(raw: DataView, offset = 0, resign = false) {
+        let magic = raw.getUint32(offset, true);
+        if (magic & 0x080808080) {
+            magic &= 0x7f7f7f7f;
+            if (resign) raw.setUint32(offset, magic, true);
+        }
+        let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
+        return String.fromCharCode.apply(null, hex);
+    }
+    constructor (hca: Uint8Array, decryptInPlace: boolean = false) {
+        let p = new DataView(hca.buffer, 0, 8);
+        let head = this.getSign(p, 0, decryptInPlace);
+        if (head !== "HCA\0") {
+            throw "Not a HCA file";
+        }
+        const version = {
+            main: p.getUint8(4),
+            sub:  p.getUint8(5)
+        }
+        this.version = version.main + '.' + version.sub;
+        this.dataOffset = p.getUint16(6);
+        this.loop.hasLoop = false;
+        p = new DataView(hca.buffer, 0, this.dataOffset);
+        let ftell = 8;
+        while (ftell < this.dataOffset - 2) {
+            let sign = this.getSign(p, ftell, decryptInPlace);
+            if (sign == "pad\0") break;
+            switch (sign) {
+                case "fmt\0":
+                    this.format.channelCount = p.getUint8(ftell + 4);
+                    this.format.samplingRate = p.getUint32(ftell + 4) & 0x00ffffff;
+                    this.format.blockCount = p.getUint32(ftell + 8);
+                    this.format.muteHeader = p.getUint16(ftell + 12);
+                    this.format.muteFooter = p.getUint16(ftell + 14);
+                    ftell += 16;
+                    break;
+                case "comp":
+                    this.blockSize = p.getUint16(ftell + 4);
+                    this.bps = this.format.samplingRate * this.blockSize / 128000.0;
+                    this.compParam =  new Uint8Array(hca.buffer, ftell + 6, 9);
+                    ftell += 16;
+                    break;
+                case "dec\0":
+                    this.blockSize = p.getUint16(ftell + 4);
+                    this.bps = this.format.samplingRate * this.blockSize / 128000.0;
+                    this.compParam[0] = p.getUint8(ftell + 6);
+                    this.compParam[1] = p.getUint8(ftell + 7);
+                    this.compParam[2] = p.getUint8(ftell + 11);
+                    this.compParam[3] = p.getUint8(ftell + 10);
+                    this.compParam[4] = p.getUint8(ftell + 8) + 1;
+                    this.compParam[5] = (p.getUint8(ftell + 12) ? p.getUint8(ftell + 9) : p.getUint8(ftell + 8)) + 1;
+                    this.compParam[6] = this.compParam[4] - this.compParam[5];
+                    this.compParam[7] = 0;
+                    ftell += 13;
+                    break;
+                case "vbr\0":
+                    ftell += 8;
+                    break;
+                case "ath\0":
+                    this.ath = p.getUint16(ftell + 4);
+                    ftell += 6;
+                    break;
+                case "loop":
+                    this.loop.hasLoop = true;
+                    this.loop.start = p.getUint32(ftell + 4);
+                    this.loop.end = p.getUint32(ftell + 8);
+                    this.loop.count = p.getUint16(ftell + 12);
+                    ftell += 16;
+                    break;
+                case "ciph":
+                    this.ciph.hasCipher = true;
+                    this.cipher = this.ciph.type = p.getUint16(ftell + 4);
+                    p.setUint16(ftell + 4, 0);
+                    ftell += 6;
+                    break;
+                case "rva\0":
+                    this.rva = p.getFloat32(ftell + 4);
+                    ftell += 8;
+                    break;
+                case "comm":
+                    let len = p.getUint8(ftell + 4);
+                    let jisdecoder = new TextDecoder('shift-jis');
+                    this.comment = jisdecoder.decode(hca.slice(ftell + 5, ftell + 5 + len));
+                    break;
+                default: break;
+            }
+        }
+        this.compParam[2] = this.compParam[2] || 1;
+        let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
+        let _b = this.compParam[7];
+        this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
+        if (decryptInPlace) {
+            // recalculate checksum
+            let newCrc16 = crc16.calc(hca, this.dataOffset - 2);
+            p.setUint16(this.dataOffset - 2, newCrc16);
+        }
+    }
+}
+
+class HCA {
+    key1: Uint32Array;
+    key2: Uint32Array;
+    static scaling_table = scaling_table;
+    static scale_conversion_table = scale_conversion_table;
+    static range_table = new Float64Array([
+        0,         2.0 / 3,    2.0 / 5,    2.0 / 7,
+        2.0 / 9,   2.0 / 11,   2.0 / 13,   2.0 / 15,
+        2.0 / 31,  2.0 / 63,   2.0 / 127,  2.0 / 255,
+        2.0 / 511, 2.0 / 1023, 2.0 / 2047, 2.0 / 4095
+    ]);
 
     parseKey (key:any) {
         let buff = new Uint8Array(4);
@@ -137,15 +237,6 @@ class HCA {
     mask(_table: Uint8Array, block: Uint8Array, offset: number, size: number) {
         for (let i = 0; i < size; i++) block[offset + i] = _table[block[offset + i]];
     }
-    private getSign(raw: DataView, offset = 0, resign = false) {
-        let magic = raw.getUint32(offset, true);
-        if (magic & 0x080808080) {
-            magic &= 0x7f7f7f7f;
-            if (resign) raw.setUint32(offset, magic, true);
-        }
-        let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
-        return String.fromCharCode.apply(null, hex);
-    }
     isHCAHeaderEncrypted(hca: Uint8Array): boolean {
         if (hca[0] & 0x80 || hca[1] & 0x80 || hca[2] & 0x80) return true;
         else return false;
@@ -153,12 +244,12 @@ class HCA {
     decrypt(hca: Uint8Array): Uint8Array {
         // in-place decryption
         // parse & decrypt (in-place) header
-        this.info(hca, this.isHCAHeaderEncrypted(hca)); // throws "Not a HCA file" if mismatch
-        if (!this.ciph.hasCipher) {
+        let info = new hcaInfo(hca, this.isHCAHeaderEncrypted(hca)); // throws "Not a HCA file" if mismatch
+        if (!info.ciph.hasCipher) {
             return hca; // not encrypted
         }
         let _table = new Uint8Array(0x100);
-        switch (this.ciph.type) {
+        switch (info.ciph.type) {
             case 0:
                 // not encrypted
                 return hca;
@@ -173,104 +264,16 @@ class HCA {
             default:
                 throw "unknown ciph.type";
         }
-        for (let i = 0; i < this.format.blockCount; ++i) {
+        for (let i = 0; i < info.format.blockCount; ++i) {
             // decrypt block
-            let ftell = this.dataOffset + this.blockSize * i;
-            this.mask(_table, hca, ftell, this.blockSize - 2);
+            let ftell = info.dataOffset + info.blockSize * i;
+            this.mask(_table, hca, ftell, info.blockSize - 2);
             // recalculate checksum
-            let p = new DataView(hca.buffer, ftell + this.blockSize - 2, 2);
-            let newCrc16 = crc16.calc(hca.subarray(ftell, ftell + this.blockSize - 2), this.blockSize - 2);
+            let p = new DataView(hca.buffer, ftell + info.blockSize - 2, 2);
+            let newCrc16 = crc16.calc(hca.subarray(ftell, ftell + info.blockSize - 2), info.blockSize - 2);
             p.setUint16(0, newCrc16);
         }
         return hca;
-    }
-    info(hca: Uint8Array, decryptInPlace: boolean = false): void {
-        let p = new DataView(hca.buffer, 0, 8);
-        let head = this.getSign(p, 0, decryptInPlace);
-        if (head !== "HCA\0") {
-            throw "Not a HCA file";
-        }
-        const version = {
-            main: p.getUint8(4),
-            sub:  p.getUint8(5)
-        }
-        this.version = version.main + '.' + version.sub;
-        this.dataOffset = p.getUint16(6);
-        this.loop.hasLoop = false;
-        p = new DataView(hca.buffer, 0, this.dataOffset);
-        let ftell = 8;
-        while (ftell < this.dataOffset - 2) {
-            let sign = this.getSign(p, ftell, decryptInPlace);
-            if (sign == "pad\0") break;
-            switch (sign) {
-                case "fmt\0":
-                    this.format.channelCount = p.getUint8(ftell + 4);
-                    this.format.samplingRate = p.getUint32(ftell + 4) & 0x00ffffff;
-                    this.format.blockCount = p.getUint32(ftell + 8);
-                    this.format.muteHeader = p.getUint16(ftell + 12);
-                    this.format.muteFooter = p.getUint16(ftell + 14);
-                    ftell += 16;
-                    break;
-                case "comp":
-                    this.blockSize = p.getUint16(ftell + 4);
-                    this.bps = this.format.samplingRate * this.blockSize / 128000.0;
-                    this.compParam =  new Uint8Array(hca.buffer, ftell + 6, 9);
-                    ftell += 16;
-                    break;
-                case "dec\0":
-                    this.blockSize = p.getUint16(ftell + 4);
-                    this.bps = this.format.samplingRate * this.blockSize / 128000.0;
-                    this.compParam[0] = p.getUint8(ftell + 6);
-                    this.compParam[1] = p.getUint8(ftell + 7);
-                    this.compParam[2] = p.getUint8(ftell + 11);
-                    this.compParam[3] = p.getUint8(ftell + 10);
-                    this.compParam[4] = p.getUint8(ftell + 8) + 1;
-                    this.compParam[5] = (p.getUint8(ftell + 12) ? p.getUint8(ftell + 9) : p.getUint8(ftell + 8)) + 1;
-                    this.compParam[6] = this.compParam[4] - this.compParam[5];
-                    this.compParam[7] = 0;
-                    ftell += 13;
-                    break;
-                case "vbr\0":
-                    ftell += 8;
-                    break;
-                case "ath\0":
-                    this.ath = p.getUint16(ftell + 4);
-                    ftell += 6;
-                    break;
-                case "loop":
-                    this.loop.hasLoop = true;
-                    this.loop.start = p.getUint32(ftell + 4);
-                    this.loop.end = p.getUint32(ftell + 8);
-                    this.loop.count = p.getUint16(ftell + 12);
-                    ftell += 16;
-                    break;
-                case "ciph":
-                    this.ciph.hasCipher = true;
-                    this.cipher = this.ciph.type = p.getUint16(ftell + 4);
-                    p.setUint16(ftell + 4, 0);
-                    ftell += 6;
-                    break;
-                case "rva\0":
-                    this.rva = p.getFloat32(ftell + 4);
-                    ftell += 8;
-                    break;
-                case "comm":
-                    let len = p.getUint8(ftell + 4);
-                    let jisdecoder = new TextDecoder('shift-jis');
-                    this.comment = jisdecoder.decode(hca.slice(ftell + 5, ftell + 5 + len));
-                    break;
-                default: break;
-            }
-        }
-        this.compParam[2] = this.compParam[2] || 1;
-        let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
-        let _b = this.compParam[7];
-        this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
-        if (decryptInPlace) {
-            // recalculate checksum
-            let newCrc16 = crc16.calc(hca, this.dataOffset - 2);
-            p.setUint16(this.dataOffset - 2, newCrc16);
-        }
     }
     decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0) {
         switch (mode) {
@@ -282,6 +285,7 @@ class HCA {
         }
         if (volume > 1) volume = 1;
         else if (volume < 0) volume = 0;
+        let info = new hcaInfo(hca, this.isHCAHeaderEncrypted(hca)); // throws "Not a HCA file" if mismatch
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
@@ -291,8 +295,8 @@ class HCA {
             id: 0x20746d66, // fmt 
             size: 0x10,
             fmtType: mode > 0 ? 1 : 3,
-            fmtChannelCount: this.format.channelCount,
-            fmtSamplingRate: this.format.samplingRate,
+            fmtChannelCount: info.format.channelCount,
+            fmtSamplingRate: info.format.samplingRate,
             fmtSamplesPerSec: 0,
             fmtSamplingSize: 0,
             fmtBitCount: mode > 0 ? mode : 32
@@ -333,43 +337,43 @@ class HCA {
         // However this "smpl" header section seems to be unrecognized so it shouldn't matter.
         // if (loop) {
             smpl.samplePeriod = (1 / fmt.fmtSamplingRate * 1000000000);
-            smpl.loop_Start = this.loop.start * 0x80 * 8 + this.format.muteHeader;
-            smpl.loop_End = (this.loop.end + 1) * 0x80 * 8 - 1;
-            smpl.loop_PlayCount = (this.loop.count == 0x80) ? 0 : this.loop.count;
+            smpl.loop_Start = info.loop.start * 0x80 * 8 + info.format.muteHeader;
+            smpl.loop_End = (info.loop.end + 1) * 0x80 * 8 - 1;
+            smpl.loop_PlayCount = (info.loop.count == 0x80) ? 0 : info.loop.count;
         // } else {
         //     smpl.loop_Start = 0;
-        //     smpl.loop_End = (this.format.blockCount + 1) * 0x80 * 8 - 1;
-        //     this.loop.start = 0;
-        //     this.loop.end = this.format.blockCount;
+        //     smpl.loop_End = (info.format.blockCount + 1) * 0x80 * 8 - 1;
+        //     info.loop.start = 0;
+        //     info.loop.end = info.format.blockCount;
         // }
-        if (this.comment) {
-            note.size = 4 + this.comment.length;
+        if (info.comment) {
+            note.size = 4 + info.comment.length;
             if (note.size & 3) note.size += 4 - note.size & 3
         }
         // Assuming each block in HCA has 0x400 samples, calculate corresponding size in WAV file
         let blockSizeInWav = 0x400 * fmt.fmtSamplingSize;
         // It's so strange that how a value calculated by ※計算方法不明 method could still be used here!?
         // I'll just comment it out & rewrite it.
-        //data.size = this.format.blockCount * 0x400 * fmt.fmtSamplingSize + (smpl.loop_End - smpl.loop_Start) * loop
-        data.size = this.format.blockCount * blockSizeInWav;
+        //data.size = info.format.blockCount * 0x400 * fmt.fmtSamplingSize + (smpl.loop_End - smpl.loop_Start) * loop
+        data.size = info.format.blockCount * blockSizeInWav;
         // Calculate mute header/footer sizes and offsets in wav file - I'm not sure whether it's correct either.
         // Won't affect wav file size if no loop audio clip appended.
-        let muteHeaderOffsetInWavData = this.format.muteHeader * fmt.fmtSamplingSize;
-        let muteFooterOffsetInWavData = this.format.blockCount * blockSizeInWav - this.format.muteFooter * fmt.fmtSamplingSize;
+        let muteHeaderOffsetInWavData = info.format.muteHeader * fmt.fmtSamplingSize;
+        let muteFooterOffsetInWavData = info.format.blockCount * blockSizeInWav - info.format.muteFooter * fmt.fmtSamplingSize;
         let loopStartOffsetInWavData = 0, loopEndOffsetInWavData = 0, loopSizeInWav = 0;
-        if (this.loop.hasLoop && loop) {
+        if (info.loop.hasLoop && loop) {
             // The file is marked as loop-able AND loop is ENABLED
-            if (this.loop.start > this.loop.end || this.loop.start < 0 || this.loop.end >= this.format.blockCount)
+            if (info.loop.start > info.loop.end || info.loop.start < 0 || info.loop.end >= info.format.blockCount)
                 throw "invalid loop start/end block index";
             // Calculate loop start/end in wav data part - just like above, not sure whether it's correct.
-            loopStartOffsetInWavData = this.loop.start * blockSizeInWav;
+            loopStartOffsetInWavData = info.loop.start * blockSizeInWav;
             /* Haven't seen any evidence about what mute header/footer means, comment out for now.
             if (loopStartOffsetInWavData < muteHeaderOffsetInWavData) {
                 loopStartOffsetInWavData = muteHeaderOffsetInWavData; //truncate to muteHeader
             }
             */
             // Once thought the loop end block should also be included, maybe that's incorrect.
-            loopEndOffsetInWavData = this.loop.end * blockSizeInWav;
+            loopEndOffsetInWavData = info.loop.end * blockSizeInWav;
             /* Same as above, comment out.
             if (loopEndOffsetInWavData > muteFooterOffsetInWavData) {
                 loopEndOffsetInWavData = muteFooterOffsetInWavData; // truncate to muteFooter
@@ -381,7 +385,7 @@ class HCA {
         }
         // Note: I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
         // I think the wav is already looping - just finitely, so maybe such metadata is not needed?
-        wavRiff.size = 0x1C + ((this.loop.hasLoop && !loop) ? 68 : 0) + (this.comment ? 8 + note.size : 0) + 8 + data.size;
+        wavRiff.size = 0x1C + ((info.loop.hasLoop && !loop) ? 68 : 0) + (info.comment ? 8 + note.size : 0) + 8 + data.size;
         let writer = new Uint8Array(wavRiff.size + 8);
         let p = new DataView(writer.buffer);
         let ftell = 0;
@@ -397,7 +401,7 @@ class HCA {
         p.setUint16(32, fmt.fmtSamplingSize, true);
         p.setUint16(34, fmt.fmtBitCount, true);
         ftell = 36;
-        if (this.loop.hasLoop && !loop) {
+        if (info.loop.hasLoop && !loop) {
             // Note: same as above, I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
             p.setUint32(ftell, smpl.id, true);
             p.setUint32(ftell + 4, smpl.size, true);
@@ -418,25 +422,25 @@ class HCA {
             p.setUint32(ftell + 64, smpl.loop_PlayCount, true);
             ftell += 68;
         }
-        if (this.comment) {
+        if (info.comment) {
             p.setUint32(ftell, note.id, true);
             p.setUint32(ftell + 4, note.size, true);
             let te = new TextEncoder();
-            writer.set(te.encode(this.comment), ftell + 8);
+            writer.set(te.encode(info.comment), ftell + 8);
             ftell += note.size;
         }
         p.setUint32(ftell, data.id, true);
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
-        let internalState = this.initializeDecoder();
+        let internalState = this.initializeDecoder(info);
         let internalStateAtLoopEnd: stChannel[] = [];
-        for (let l = 0; l < this.format.blockCount; ++l) {
-            let startOffset = this.dataOffset + this.blockSize * l;
-            let block = hca.subarray(startOffset, startOffset + this.blockSize);
-            this.decodeBlock(internalState, block, mode);
-            let wavebuff = this.writeToPCM(internalState, mode, volume, writer, ftell);
+        for (let l = 0; l < info.format.blockCount; ++l) {
+            let startOffset = info.dataOffset + info.blockSize * l;
+            let block = hca.subarray(startOffset, startOffset + info.blockSize);
+            this.decodeBlock(info, internalState, block, mode);
+            let wavebuff = this.writeToPCM(info, internalState, mode, volume, writer, ftell);
             ftell += wavebuff.length;
-            if (this.loop.hasLoop && loop && l == this.loop.end - 1) {
+            if (info.loop.hasLoop && loop && l == info.loop.end - 1) {
                 // save the internal state at this moment, in order to rework the "seam"
                 for (let c of internalState) {
                     internalStateAtLoopEnd.push(c.clone());
@@ -445,20 +449,20 @@ class HCA {
         }
         // rework the "seam" if needed
         let seamBuff  = new Uint8Array(0);
-        if (this.loop.hasLoop && loop) {
+        if (info.loop.hasLoop && loop) {
             // rewind the internal state
             internalState = internalStateAtLoopEnd;
             // re-decode
-            let startOffset = this.dataOffset + this.blockSize * this.loop.start;
-            let block = hca.subarray(startOffset, startOffset + this.blockSize);
-            this.decodeBlock(internalState, block, mode);
-            seamBuff = this.writeToPCM(internalState, mode, volume);
+            let startOffset = info.dataOffset + info.blockSize * info.loop.start;
+            let block = hca.subarray(startOffset, startOffset + info.blockSize);
+            this.decodeBlock(info, internalState, block, mode);
+            seamBuff = this.writeToPCM(info, internalState, mode, volume);
         }
         // decoding done, then just copy looping part
-        if (this.loop.hasLoop && loop) {
+        if (info.loop.hasLoop && loop) {
             let wavDataOffset = writer.length - data.size;
             // copy "tail"
-            let tailSize = this.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
+            let tailSize = info.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
             if (tailSize > 0) {
                 let src = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData, tailSize);
                 let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + loop * loopSizeInWav, tailSize);
@@ -477,11 +481,11 @@ class HCA {
         }
         return writer;
     }
-    initializeDecoder(): stChannel[] {
+    initializeDecoder(info: hcaInfo): stChannel[] {
         let r = new Uint8Array(0x10);
-        let b = Math.floor(this.format.channelCount / this.compParam[2]);
-        if (this.compParam[6] && b > 1) {
-            for (let i = 0; i < this.compParam[2]; ++i) switch (b) {
+        let b = Math.floor(info.format.channelCount / info.compParam[2]);
+        if (info.compParam[6] && b > 1) {
+            for (let i = 0; i < info.compParam[2]; ++i) switch (b) {
                 case 8:
                     r[i * b + 6] = 1;
                     r[i * b + 7] = 2;
@@ -490,12 +494,12 @@ class HCA {
                     r[i * b + 4] = 1;
                     r[i * b + 5] = 2;
                 case 5:
-                    if (b == 5 && this.compParam[3] <= 2) {
+                    if (b == 5 && info.compParam[3] <= 2) {
                         r[i * b + 3] = 1;
                         r[i * b + 4] = 2;
                     }
                 case 4:
-                    if (b == 4 && this.compParam[3] == 0) {
+                    if (b == 4 && info.compParam[3] == 0) {
                         r[i * b + 2] = 1;
                         r[i * b + 3] = 2;
                     }
@@ -507,17 +511,17 @@ class HCA {
             }
         }
         let internalState: stChannel[] = []
-        for (let i = 0; i < this.format.channelCount; ++i) {
+        for (let i = 0; i < info.format.channelCount; ++i) {
             let c = new stChannel();
             c.type = r[i];
-            c.value3 = c.value.subarray(this.compParam[5] + this.compParam[6]);
-            c.count = this.compParam[5] + (r[i] != 2 ? this.compParam[6] : 0);
+            c.value3 = c.value.subarray(info.compParam[5] + info.compParam[6]);
+            c.count = info.compParam[5] + (r[i] != 2 ? info.compParam[6] : 0);
             internalState.push(c);
         }
         return internalState;
     }
 
-    decodeBlock(internalState: stChannel[], block: Uint8Array, mode = 32): void
+    decodeBlock(info: hcaInfo, internalState: stChannel[], block: Uint8Array, mode = 32): void
     {
         switch (mode) {
             case 0: // float
@@ -526,20 +530,20 @@ class HCA {
             default:
                 mode = 32;
         }
-        let data = new clData(this.blockSize, block);
+        let data = new clData(info.blockSize, block);
         let magic = data.read(16);
         if (magic == 0xFFFF) {
             let a = (data.read(9) << 8) - data.read(7);
-            for (let i = 0; i < this.format.channelCount; i++) internalState[i].Decode1(data, this.compParam[8], a);
+            for (let i = 0; i < info.format.channelCount; i++) internalState[i].Decode1(data, info.compParam[8], a);
             for (let i = 0; i<8; i++) {
-                for (let j = 0; j < this.format.channelCount; j++) internalState[j].Decode2(data);
-                for (let j = 0; j < this.format.channelCount; j++) internalState[j].Decode3(this.compParam[8], this.compParam[7], this.compParam[6] + this.compParam[5], this.compParam[4]);
-                for (let j = 0; j < this.format.channelCount - 1; j++) internalState[j].Decode4(i, this.compParam[4] - this.compParam[5], this.compParam[5], this.compParam[6], internalState[j + 1]);
-                for (let j = 0; j < this.format.channelCount; j++) internalState[j].Decode5(i);
+                for (let j = 0; j < info.format.channelCount; j++) internalState[j].Decode2(data);
+                for (let j = 0; j < info.format.channelCount; j++) internalState[j].Decode3(info.compParam[8], info.compParam[7], info.compParam[6] + info.compParam[5], info.compParam[4]);
+                for (let j = 0; j < info.format.channelCount - 1; j++) internalState[j].Decode4(i, info.compParam[4] - info.compParam[5], info.compParam[5], info.compParam[6], internalState[j + 1]);
+                for (let j = 0; j < info.format.channelCount; j++) internalState[j].Decode5(i);
             }
         }
     }
-    writeToPCM(internalState: stChannel[], mode = 32, volume = 1.0,
+    writeToPCM(info: hcaInfo, internalState: stChannel[], mode = 32, volume = 1.0,
         writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined): Uint8Array
     {
         switch (mode) {
@@ -553,7 +557,7 @@ class HCA {
         else if (volume < 0) volume = 0;
         // create new writer if not specified
         if (writer == null) {
-            writer = new Uint8Array(0x400 * this.format.channelCount * mode / 8);
+            writer = new Uint8Array(0x400 * info.format.channelCount * mode / 8);
             if (ftell == null) {
                 ftell = 0;
             }
@@ -567,7 +571,7 @@ class HCA {
         let ftellBegin = ftell;
         for (let i = 0; i<8; i++) {
             for (let j = 0; j<0x80; j++) {
-                for (let k = 0; k < this.format.channelCount; k++) {
+                for (let k = 0; k < info.format.channelCount; k++) {
                     let f = internalState[k].wave[i][j] * volume;
                     if (f > 1) f = 1;
                     else if (f < -1) f = -1;
