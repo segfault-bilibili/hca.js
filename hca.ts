@@ -41,10 +41,6 @@ class HCA {
     rva = 0.0;
     comment = "";
 
-    origin = new Uint8Array(0);
-    decrypted = new Uint8Array(0);
-    wave = new Uint8Array(0);
-
     parseKey (key:any) {
         let buff = new Uint8Array(4);
         try { switch (typeof key) {
@@ -276,18 +272,7 @@ class HCA {
             p.setUint16(this.dataOffset - 2, newCrc16);
         }
     }
-    load(hca: Uint8Array) {
-        if (this.isHCAHeaderEncrypted(hca)) {
-            let newBuff = hca.slice(0);
-            this.decrypted = this.decrypt(newBuff); // calls "info" inside, throws "Not a HCA file" if mismatch
-        } else {
-            this.info(hca);
-            this.decrypted = hca;
-        }
-        this.origin = hca;
-    }
-
-    decode(hca = this.decrypted, mode = 32, loop = 0, volume = 1.0) {
+    decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0) {
         switch (mode) {
             case 0: // float
             case 8: case 16: case 24: case 32: // integer
@@ -490,7 +475,7 @@ class HCA {
                 dst.set(src);
             }
         }
-        return this.wave = writer;
+        return writer;
     }
     initializeDecoder(): stChannel[] {
         let r = new Uint8Array(0x10);
