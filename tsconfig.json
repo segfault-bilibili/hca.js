@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    "target": "es2015",
     "module": "commonjs",
-    "lib": ["ES5", "DOM"],
+    "lib": ["ES2015", "DOM"],
     "strict": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
