@@ -14,20 +14,16 @@ class hcaInfo {
         muteFooter: 0
     }
     blockSize = 0;
+    hasHeader: Record<string, boolean> = {};
     bps = 0;
     compParam = new Uint8Array(9);
     ath = 0;
     loop = {
-        hasLoop: false,
         start: 0,
         end: 0,
         count: 0
     }
-    ciph = {
-        hasCipher: false,
-        type: 0,
-    }
-    cipher = 0; // same as ciph.type
+    cipher = 0;
     rva = 0.0;
     comment = "";
     private getSign(raw: DataView, offset = 0, resign = false) {
@@ -51,11 +47,11 @@ class hcaInfo {
         }
         this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
-        this.loop.hasLoop = false;
         p = new DataView(hca.buffer, 0, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
             let sign = this.getSign(p, ftell, decryptInPlace);
+            this.hasHeader[sign] = true;
             if (sign == "pad\0") break;
             switch (sign) {
                 case "fmt\0":
@@ -93,15 +89,13 @@ class hcaInfo {
                     ftell += 6;
                     break;
                 case "loop":
-                    this.loop.hasLoop = true;
                     this.loop.start = p.getUint32(ftell + 4);
                     this.loop.end = p.getUint32(ftell + 8);
                     this.loop.count = p.getUint16(ftell + 12);
                     ftell += 16;
                     break;
                 case "ciph":
-                    this.ciph.hasCipher = true;
-                    this.cipher = this.ciph.type = p.getUint16(ftell + 4);
+                    this.cipher = p.getUint16(ftell + 4);
                     p.setUint16(ftell + 4, 0);
                     ftell += 6;
                     break;
@@ -146,11 +140,11 @@ class HCA {
         // in-place decryption
         // parse & decrypt (in-place) header
         let info = new hcaInfo(hca, hcaCipher.isHCAHeaderMasked(hca)); // throws "Not a HCA file" if mismatch
-        if (!info.ciph.hasCipher) {
+        if (!info.hasHeader["ciph"]) {
             return hca; // not encrypted
         }
         let cipher: hcaCipher;
-        switch (info.ciph.type) {
+        switch (info.cipher) {
             case 0:
                 // not encrypted
                 return hca;
@@ -262,7 +256,7 @@ class HCA {
         let muteHeaderOffsetInWavData = info.format.muteHeader * fmt.fmtSamplingSize;
         let muteFooterOffsetInWavData = info.format.blockCount * blockSizeInWav - info.format.muteFooter * fmt.fmtSamplingSize;
         let loopStartOffsetInWavData = 0, loopEndOffsetInWavData = 0, loopSizeInWav = 0;
-        if (info.loop.hasLoop && loop) {
+        if (info.hasHeader["loop"] && loop) {
             // The file is marked as loop-able AND loop is ENABLED
             if (info.loop.start > info.loop.end || info.loop.start < 0 || info.loop.end >= info.format.blockCount)
                 throw "invalid loop start/end block index";
@@ -286,7 +280,7 @@ class HCA {
         }
         // Note: I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
         // I think the wav is already looping - just finitely, so maybe such metadata is not needed?
-        wavRiff.size = 0x1C + ((info.loop.hasLoop && !loop) ? 68 : 0) + (info.comment ? 8 + note.size : 0) + 8 + data.size;
+        wavRiff.size = 0x1C + ((info.hasHeader["loop"] && !loop) ? 68 : 0) + (info.comment ? 8 + note.size : 0) + 8 + data.size;
         let writer = new Uint8Array(wavRiff.size + 8);
         let p = new DataView(writer.buffer);
         let ftell = 0;
@@ -302,7 +296,7 @@ class HCA {
         p.setUint16(32, fmt.fmtSamplingSize, true);
         p.setUint16(34, fmt.fmtBitCount, true);
         ftell = 36;
-        if (info.loop.hasLoop && !loop) {
+        if (info.hasHeader["loop"] && !loop) {
             // Note: same as above, I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
             p.setUint32(ftell, smpl.id, true);
             p.setUint32(ftell + 4, smpl.size, true);
@@ -341,14 +335,14 @@ class HCA {
             this.decodeBlock(state, block, mode);
             let wavebuff = this.writeToPCM(state, mode, volume, writer, ftell);
             ftell += wavebuff.length;
-            if (info.loop.hasLoop && loop && l == info.loop.end - 1) {
+            if (info.hasHeader["loop"] && loop && l == info.loop.end - 1) {
                 // save the internal state at this moment, in order to rework the "seam"
                 stateAtLoopEnd = state.clone();
             }
         }
         // rework the "seam" if needed
         let seamBuff: Uint8Array | undefined;
-        if (info.loop.hasLoop && loop) {
+        if (info.hasHeader["loop"] && loop) {
             // rewind the internal state
             if (stateAtLoopEnd == null) throw "stateAtLoopEnd == null";
             state = stateAtLoopEnd;
@@ -359,7 +353,7 @@ class HCA {
             seamBuff = this.writeToPCM(state, mode, volume);
         }
         // decoding done, then just copy looping part
-        if (info.loop.hasLoop && loop) {
+        if (info.hasHeader["loop"] && loop) {
             let wavDataOffset = writer.length - data.size;
             // copy "tail"
             let tailSize = info.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
