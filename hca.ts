@@ -397,12 +397,12 @@ class HCA {
         let magic = data.read(16);
         if (magic == 0xFFFF) {
             let a = (data.read(9) << 8) - data.read(7);
-            for (let i = 0; i < info.format.channelCount; i++) channel[i].Decode1(data, info.compParam[8], a);
+            for (let i = 0; i < info.format.channelCount; i++) hcaDecoder.step1(channel[i], data, info.compParam[8], a);
             for (let i = 0; i<8; i++) {
-                for (let j = 0; j < info.format.channelCount; j++) channel[j].Decode2(data);
-                for (let j = 0; j < info.format.channelCount; j++) channel[j].Decode3(info.compParam[8], info.compParam[7], info.compParam[6] + info.compParam[5], info.compParam[4]);
-                for (let j = 0; j < info.format.channelCount - 1; j++) channel[j].Decode4(i, info.compParam[4] - info.compParam[5], info.compParam[5], info.compParam[6], channel[j + 1]);
-                for (let j = 0; j < info.format.channelCount; j++) channel[j].Decode5(i);
+                for (let j = 0; j < info.format.channelCount; j++) hcaDecoder.step2(channel[j], data);
+                for (let j = 0; j < info.format.channelCount; j++) hcaDecoder.step3(channel[j], info.compParam[8], info.compParam[7], info.compParam[6] + info.compParam[5], info.compParam[4]);
+                for (let j = 0; j < info.format.channelCount - 1; j++) hcaDecoder.step4(channel[j], i, info.compParam[4] - info.compParam[5], info.compParam[5], info.compParam[6], channel[j + 1]);
+                for (let j = 0; j < info.format.channelCount; j++) hcaDecoder.step5(channel[j], i);
             }
         }
     }
@@ -479,7 +479,7 @@ class HCA {
     }
 }
 
-class stChannel {
+class hcaChanCtx {
     block = new Float64Array(0x80);
     base = new Float64Array(0x80);
     value = new Uint8Array(0x80);
@@ -509,9 +509,9 @@ class stChannel {
         if (obj instanceof Float64Array) return obj.slice(0);
         return obj;
     }
-    clone() : stChannel {
+    clone() : hcaChanCtx {
         // ref: https://stackoverflow.com/questions/28150967/typescript-cloning-object
-        let ret = new stChannel() as any;
+        let ret = new hcaChanCtx() as any;
         for (let key in this) {
             switch (typeof this[key]) {
                 case "number":
@@ -530,8 +530,11 @@ class stChannel {
         }
         return ret;
     }
-    Decode1(data: clData, a: number, b: number, ath = new Uint8Array(0x80)) {
-        const scalelist = new Uint8Array([
+}
+class hcaDecoder {
+    static readonly consts = {
+        // step1
+        scalelist: new Uint8Array([
             0x0E,0x0E,0x0E,0x0E,0x0E,0x0E,0x0D,0x0D,
             0x0D,0x0D,0x0D,0x0D,0x0C,0x0C,0x0C,0x0C,
             0x0C,0x0C,0x0B,0x0B,0x0B,0x0B,0x0B,0x0B,
@@ -543,44 +546,10 @@ class stChannel {
             0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
             // v1.3
             //0x02,0x01,0x01,0x01,0x01,0x01,0x01,0x01,
-        ]);
-        let v = data.read(3);
-        if (v >= 6) for (let i = 0; i < this.count; i++) this.value[i] = data.read(6);
-        else if (v) {
-            let v1 = data.read(6);
-            let v2 = (1 << v) - 1;
-            let v3 = v2 >> 1;
-            let v4 = 0;
-            this.value[0] = v1;
-            for (let i = 1; i < this.count; i++) {
-                v4 = data.read(v);
-                if (v4 != v2) v1 += v4 - v3;
-                else v1 = data.read(6);
-                this.value[i] = v1;
-            }
-        } else this.value.fill(0);
-        if (this.type == 2) {
-            v = data.check(4);
-            this.value2[0] = v;
-            if (v < 15) for (let i = 0; i < 8; i++) this.value2[i] = data.read(4);
-        }
-        else for (let i = 0; i < a; i++) this.value3[i] = data.read(6);
-        for (let i = 0; i < this.count; i++) {
-            v = this.value[i];
-            if (v) {
-                v = ath[i] + ((b + i) >> 8) - ((v * 5) >> 1) + 1;
-                if (v < 0) v = 15;
-                else if (v >= 0x39) v = 1;
-                else v = scalelist[v];
-            }
-            this.scale[i] = v;
-        }
-        this.scale.fill(0, this.count);
-        for (let i = 0; i < this.count; i++) this.base[i] = HCA.scaling_table[this.value[i]] * HCA.range_table[this.scale[i]];
-    }
-    Decode2(data: clData) {
-        const list1 = new Uint8Array([0,2,3,3,4,4,4,4,5,6,7,8,9,10,11,12]);
-        const list2 = new Uint8Array([
+        ]),
+        // step2
+        list1: new Uint8Array([0,2,3,3,4,4,4,4,5,6,7,8,9,10,11,12]),
+        list2: new Uint8Array([
             0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
             1,1,2,2,0,0,0,0,0,0,0,0,0,0,0,0,
             2,2,2,2,2,2,3,3,0,0,0,0,0,0,0,0,
@@ -589,8 +558,8 @@ class stChannel {
             3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,
             3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,
             3,3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
-        ]);
-        const list3 = new Int8Array([
+        ]),
+        list3: new Int8Array([
             +0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,
             +0,+0,+1,-1,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,+0,
             +0,+0,+1,+1,-1,-1,+2,-2,+0,+0,+0,+0,+0,+0,+0,+0,
@@ -599,71 +568,34 @@ class stChannel {
             +0,+0,+1,+1,-1,-1,+2,+2,-2,-2,+3,-3,+4,-4,+5,-5,
             +0,+0,+1,+1,-1,-1,+2,-2,+3,-3,+4,-4,+5,-5,+6,-6,
             +0,+0,+1,-1,+2,-2,+3,-3,+4,-4,+5,-5,+6,-6,+7,-7,
-        ]);
-        for (let i = 0; i < this.count; i++) {
-            let f = 0.0;
-            let s = this.scale[i];
-            let bitSize = list1[s];
-            let v = data.read(bitSize);
-            if (s < 8) {
-                v += s << 4;
-                data.seek(list2[v] - bitSize);
-                f = list3[v];
-            } else {
-                v = (1 - ((v & 1) << 1)) * (v >> 1);
-                if (!v) data.seek(-1);
-                f = v;
-            }
-            this.block[i] = this.base[i] * f;
-        }
-        this.block.fill(0, this.count);
-    }
-    Decode3(a: number, b: number, c: number, d: number) {
-        if (this.type != 2 && b > 0) {
-            const listInt = new Uint32Array([
-                0x00000000,0x00000000,0x32A0B051,0x32D61B5E,0x330EA43A,0x333E0F68,0x337D3E0C,0x33A8B6D5,
-                0x33E0CCDF,0x3415C3FF,0x34478D75,0x3484F1F6,0x34B123F6,0x34EC0719,0x351D3EDA,0x355184DF,
-                0x358B95C2,0x35B9FCD2,0x35F7D0DF,0x36251958,0x365BFBB8,0x36928E72,0x36C346CD,0x370218AF,
-                0x372D583F,0x3766F85B,0x3799E046,0x37CD078C,0x3808980F,0x38360094,0x38728177,0x38A18FAF,
-                0x38D744FD,0x390F6A81,0x393F179A,0x397E9E11,0x39A9A15B,0x39E2055B,0x3A16942D,0x3A48A2D8,
-                0x3A85AAC3,0x3AB21A32,0x3AED4F30,0x3B1E196E,0x3B52A81E,0x3B8C57CA,0x3BBAFF5B,0x3BF9295A,
-                0x3C25FED7,0x3C5D2D82,0x3C935A2B,0x3CC4563F,0x3D02CD87,0x3D2E4934,0x3D68396A,0x3D9AB62B,
-                0x3DCE248C,0x3E0955EE,0x3E36FD92,0x3E73D290,0x3EA27043,0x3ED87039,0x3F1031DC,0x3F40213B,
-                //
-                0x3F800000,0x3FAA8D26,0x3FE33F89,0x4017657D,0x4049B9BE,0x40866491,0x40B311C4,0x40EE9910,
-                0x411EF532,0x4153CCF1,0x418D1ADF,0x41BC034A,0x41FA83B3,0x4226E595,0x425E60F5,0x429426FF,
-                0x42C5672A,0x43038359,0x432F3B79,0x43697C38,0x439B8D3A,0x43CF4319,0x440A14D5,0x4437FBF0,
-                0x4475257D,0x44A3520F,0x44D99D16,0x4510FA4D,0x45412C4D,0x4580B1ED,0x45AB7A3A,0x45E47B6D,
-                0x461837F0,0x464AD226,0x46871F62,0x46B40AAF,0x46EFE4BA,0x471FD228,0x4754F35B,0x478DDF04,
-                0x47BD08A4,0x47FBDFED,0x4827CD94,0x485F9613,0x4894F4F0,0x48C67991,0x49043A29,0x49302F0E,
-                0x496AC0C7,0x499C6573,0x49D06334,0x4A0AD4C6,0x4A38FBAF,0x4A767A41,0x4AA43516,0x4ADACB94,
-                0x4B11C3D3,0x4B4238D2,0x4B8164D2,0x4BAC6897,0x4BE5B907,0x4C190B88,0x4C4BEC15,0x00000000,
-            ]);
-            const listFloat = new Float32Array(listInt.buffer);
-            for (let i = 0; i < a; i++) {
-                for (let j = 0, k = c, l = c - 1; j < b && k < d; j++, l--) {
-                    this.block[k++] = listFloat[0x40 + this.value3[i] - this.value[l]] * this.block[l];
-                }
-            }
-            this.block[0x80 - 1] = 0;
-        }
-    }
-    Decode4(index: number, a: number, b: number, c: number, next: stChannel) {
-        if (this.type == 1 && c) {
-            const listFloat = new Float64Array([
-                2,      13 / 7.0, 12 / 7.0, 11 / 7.0, 10 / 7.0, 9 / 7.0, 8 / 7.0, 1,
-                6 / 7.0, 5 / 7.0,  4 / 7.0,  3 / 7.0,  2 / 7.0, 1 / 7.0, 0,       0
-            ]);
-            let f1 = listFloat[next.value2[index]];
-            let f2 = f1 - 2.0;
-            for (let i = 0; i < a; i++) {
-                next.block[b + i] = this.block[b + i] * f2;
-                this.block[b + i] = this.block[b + i] * f1;
-            }
-        }
-    }
-    Decode5(index: number) {
-        const list1Int = [
+        ]),
+        // step3
+        listInt: new Uint32Array([
+            0x00000000,0x00000000,0x32A0B051,0x32D61B5E,0x330EA43A,0x333E0F68,0x337D3E0C,0x33A8B6D5,
+            0x33E0CCDF,0x3415C3FF,0x34478D75,0x3484F1F6,0x34B123F6,0x34EC0719,0x351D3EDA,0x355184DF,
+            0x358B95C2,0x35B9FCD2,0x35F7D0DF,0x36251958,0x365BFBB8,0x36928E72,0x36C346CD,0x370218AF,
+            0x372D583F,0x3766F85B,0x3799E046,0x37CD078C,0x3808980F,0x38360094,0x38728177,0x38A18FAF,
+            0x38D744FD,0x390F6A81,0x393F179A,0x397E9E11,0x39A9A15B,0x39E2055B,0x3A16942D,0x3A48A2D8,
+            0x3A85AAC3,0x3AB21A32,0x3AED4F30,0x3B1E196E,0x3B52A81E,0x3B8C57CA,0x3BBAFF5B,0x3BF9295A,
+            0x3C25FED7,0x3C5D2D82,0x3C935A2B,0x3CC4563F,0x3D02CD87,0x3D2E4934,0x3D68396A,0x3D9AB62B,
+            0x3DCE248C,0x3E0955EE,0x3E36FD92,0x3E73D290,0x3EA27043,0x3ED87039,0x3F1031DC,0x3F40213B,
+            //
+            0x3F800000,0x3FAA8D26,0x3FE33F89,0x4017657D,0x4049B9BE,0x40866491,0x40B311C4,0x40EE9910,
+            0x411EF532,0x4153CCF1,0x418D1ADF,0x41BC034A,0x41FA83B3,0x4226E595,0x425E60F5,0x429426FF,
+            0x42C5672A,0x43038359,0x432F3B79,0x43697C38,0x439B8D3A,0x43CF4319,0x440A14D5,0x4437FBF0,
+            0x4475257D,0x44A3520F,0x44D99D16,0x4510FA4D,0x45412C4D,0x4580B1ED,0x45AB7A3A,0x45E47B6D,
+            0x461837F0,0x464AD226,0x46871F62,0x46B40AAF,0x46EFE4BA,0x471FD228,0x4754F35B,0x478DDF04,
+            0x47BD08A4,0x47FBDFED,0x4827CD94,0x485F9613,0x4894F4F0,0x48C67991,0x49043A29,0x49302F0E,
+            0x496AC0C7,0x499C6573,0x49D06334,0x4A0AD4C6,0x4A38FBAF,0x4A767A41,0x4AA43516,0x4ADACB94,
+            0x4B11C3D3,0x4B4238D2,0x4B8164D2,0x4BAC6897,0x4BE5B907,0x4C190B88,0x4C4BEC15,0x00000000,
+        ]),
+        // step4
+        listFloat: new Float64Array([
+            2,      13 / 7.0, 12 / 7.0, 11 / 7.0, 10 / 7.0, 9 / 7.0, 8 / 7.0, 1,
+            6 / 7.0, 5 / 7.0,  4 / 7.0,  3 / 7.0,  2 / 7.0, 1 / 7.0, 0,       0
+        ]),
+        // step5
+        list1Int: [
             new Uint32Array([
                 0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,
                 0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,0x3DA73D75,
@@ -734,8 +666,8 @@ class stChannel {
                 0x3F53FAC3,0x3F5233C6,0x3F5064AF,0x3F4E8D90,0x3F4CAE79,0x3F4AC77F,0x3F48D8B3,0x3F46E22A,
                 0x3F44E3F5,0x3F42DE29,0x3F40D0DA,0x3F3EBC1B,0x3F3CA003,0x3F3A7CA4,0x3F385216,0x3F36206C,
             ])
-        ];
-        const list2Int = [
+        ],
+        list2Int: [
             new Uint32Array([
                 0xBD0A8BD4,0x3D0A8BD4,0x3D0A8BD4,0xBD0A8BD4,0x3D0A8BD4,0xBD0A8BD4,0xBD0A8BD4,0x3D0A8BD4,
                 0x3D0A8BD4,0xBD0A8BD4,0xBD0A8BD4,0x3D0A8BD4,0xBD0A8BD4,0x3D0A8BD4,0x3D0A8BD4,0xBD0A8BD4,
@@ -806,8 +738,8 @@ class stChannel {
                 0xBF0F8784,0xBF121EB0,0xBF14B039,0xBF173C07,0xBF19C200,0xBF1C420C,0xBF1EBC12,0xBF212FF9,
                 0xBF239DA9,0xBF26050A,0xBF286605,0xBF2AC082,0xBF2D1469,0xBF2F61A5,0xBF31A81D,0xBF33E7BC,
             ])
-        ];
-        const list3Int = new Uint32Array([
+        ],
+        list3Int: new Uint32Array([
             0x3A3504F0,0x3B0183B8,0x3B70C538,0x3BBB9268,0x3C04A809,0x3C308200,0x3C61284C,0x3C8B3F17,
             0x3CA83992,0x3CC77FBD,0x3CE91110,0x3D0677CD,0x3D198FC4,0x3D2DD35C,0x3D434643,0x3D59ECC1,
             0x3D71CBA8,0x3D85741E,0x3D92A413,0x3DA078B4,0x3DAEF522,0x3DBE1C9E,0x3DCDF27B,0x3DDE7A1D,
@@ -825,9 +757,94 @@ class stChannel {
             0xBF7E7C2A,0xBF7EB3CC,0xBF7EE507,0xBF7F106C,0xBF7F3683,0xBF7F57CA,0xBF7F74B6,0xBF7F8DB6,
             0xBF7FA32E,0xBF7FB57B,0xBF7FC4F6,0xBF7FD1ED,0xBF7FDCAD,0xBF7FE579,0xBF7FEC90,0xBF7FF22E,
             0xBF7FF688,0xBF7FF9D0,0xBF7FFC32,0xBF7FFDDA,0xBF7FFEED,0xBF7FFF8F,0xBF7FFFDF,0xBF7FFFFC,
-        ]);
-        let s = this.block, s0 = 0;
-        let d = this.wav1, d0 = 0;
+        ]),
+    }
+    static step1(channel: hcaChanCtx, data: clData, a: number, b: number, ath = new Uint8Array(0x80)) {
+        const scalelist = this.consts.scalelist;
+        let v = data.read(3);
+        if (v >= 6) for (let i = 0; i < channel.count; i++) channel.value[i] = data.read(6);
+        else if (v) {
+            let v1 = data.read(6);
+            let v2 = (1 << v) - 1;
+            let v3 = v2 >> 1;
+            let v4 = 0;
+            channel.value[0] = v1;
+            for (let i = 1; i < channel.count; i++) {
+                v4 = data.read(v);
+                if (v4 != v2) v1 += v4 - v3;
+                else v1 = data.read(6);
+                channel.value[i] = v1;
+            }
+        } else channel.value.fill(0);
+        if (channel.type == 2) {
+            v = data.check(4);
+            channel.value2[0] = v;
+            if (v < 15) for (let i = 0; i < 8; i++) channel.value2[i] = data.read(4);
+        }
+        else for (let i = 0; i < a; i++) channel.value3[i] = data.read(6);
+        for (let i = 0; i < channel.count; i++) {
+            v = channel.value[i];
+            if (v) {
+                v = ath[i] + ((b + i) >> 8) - ((v * 5) >> 1) + 1;
+                if (v < 0) v = 15;
+                else if (v >= 0x39) v = 1;
+                else v = scalelist[v];
+            }
+            channel.scale[i] = v;
+        }
+        channel.scale.fill(0, channel.count);
+        for (let i = 0; i < channel.count; i++) channel.base[i] = HCA.scaling_table[channel.value[i]] * HCA.range_table[channel.scale[i]];
+    }
+    static step2(channel: hcaChanCtx, data: clData) {
+        const list1 = this.consts.list1;
+        const list2 = this.consts.list2;
+        const list3 = this.consts.list3;
+        for (let i = 0; i < channel.count; i++) {
+            let f = 0.0;
+            let s = channel.scale[i];
+            let bitSize = list1[s];
+            let v = data.read(bitSize);
+            if (s < 8) {
+                v += s << 4;
+                data.seek(list2[v] - bitSize);
+                f = list3[v];
+            } else {
+                v = (1 - ((v & 1) << 1)) * (v >> 1);
+                if (!v) data.seek(-1);
+                f = v;
+            }
+            channel.block[i] = channel.base[i] * f;
+        }
+        channel.block.fill(0, channel.count);
+    }
+    static step3(channel: hcaChanCtx, a: number, b: number, c: number, d: number) {
+        if (channel.type != 2 && b > 0) {
+            const listFloat = new Float32Array(this.consts.listInt.buffer);
+            for (let i = 0; i < a; i++) {
+                for (let j = 0, k = c, l = c - 1; j < b && k < d; j++, l--) {
+                    channel.block[k++] = listFloat[0x40 + channel.value3[i] - channel.value[l]] * channel.block[l];
+                }
+            }
+            channel.block[0x80 - 1] = 0;
+        }
+    }
+    static step4(channel: hcaChanCtx, index: number, a: number, b: number, c: number, next: hcaChanCtx) {
+        if (channel.type == 1 && c) {
+            const listFloat = this.consts.listFloat;
+            let f1 = listFloat[next.value2[index]];
+            let f2 = f1 - 2.0;
+            for (let i = 0; i < a; i++) {
+                next.block[b + i] = channel.block[b + i] * f2;
+                channel.block[b + i] = channel.block[b + i] * f1;
+            }
+        }
+    }
+    static step5(channel: hcaChanCtx, index: number) {
+        const list1Int = this.consts.list1Int;
+        const list2Int = this.consts.list2Int;
+        const list3Int = this.consts.list3Int;
+        let s = channel.block, s0 = 0;
+        let d = channel.wav1, d0 = 0;
         for (let i = 0, count1 = 1, count2 = 0x40; i < 7; i++, count1 <<= 1, count2 >>= 1) {
             let d1 = 0;
             let d2 = count2;
@@ -847,8 +864,8 @@ class stChannel {
             s0 = 0;
             d = w;
         }
-        s = this.wav1;
-        d = this.block;
+        s = channel.wav1;
+        d = channel.block;
         for (let i = 0, count1 = 0x40, count2 = 1; i < 7; i++, count1 >>= 1, count2 <<= 1) {
             let list1Float = new Float32Array(list1Int[i].buffer), l0 = 0;
             let list2Float = new Float32Array(list2Int[i].buffer), l1 = 0;
@@ -874,20 +891,20 @@ class stChannel {
             s = d;
             d = w;
         }
-        d = this.wav2;
+        d = channel.wav2;
         d.set(s);
         let list3Float = new Float32Array(list3Int.buffer);
         s0 = 0;
-        d = this.wave[index];
+        d = channel.wave[index];
         d0 = 0;
         let s1 = 0x40;
         let s2 = 0;
-        for (let i = 0; i<0x40; i++) d[d0++] = this.wav2[s1++] * list3Float[s0++] + this.wav3[s2++];
-        for (let i = 0; i<0x40; i++) d[d0++] = this.wav2[--s1] * list3Float[s0++] - this.wav3[s2++];
+        for (let i = 0; i<0x40; i++) d[d0++] = channel.wav2[s1++] * list3Float[s0++] + channel.wav3[s2++];
+        for (let i = 0; i<0x40; i++) d[d0++] = channel.wav2[--s1] * list3Float[s0++] - channel.wav3[s2++];
         s1 = 0x40 - 1;
         s2 = 0;
-        for (let i = 0; i<0x40; i++) this.wav3[s2++] = list3Float[--s0] * this.wav2[s1--];
-        for (let i = 0; i<0x40; i++) this.wav3[s2++] = list3Float[--s0] * this.wav2[++s1];
+        for (let i = 0; i<0x40; i++) channel.wav3[s2++] = list3Float[--s0] * channel.wav2[s1--];
+        for (let i = 0; i<0x40; i++) channel.wav3[s2++] = list3Float[--s0] * channel.wav2[++s1];
     }
 }
 
@@ -1103,7 +1120,7 @@ class hcaCipher {
 
 class hcaInternalState {
     info: hcaInfo;
-    channel: stChannel[] = [];
+    channel: hcaChanCtx[] = [];
     clone(): hcaInternalState {
         let ret = new hcaInternalState(this.info);
         this.channel.forEach(c => ret.channel.push(c.clone()));
@@ -1140,7 +1157,7 @@ class hcaInternalState {
             }
         }
         for (let i = 0; i < info.format.channelCount; ++i) {
-            let c = new stChannel();
+            let c = new hcaChanCtx();
             c.type = r[i];
             c.value3 = c.value.subarray(info.compParam[5] + info.compParam[6]);
             c.count = info.compParam[5] + (r[i] != 2 ? info.compParam[6] : 0);
