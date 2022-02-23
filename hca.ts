@@ -432,31 +432,30 @@ class HCA {
         p.setUint32(ftell, data.id, true);
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
-        let channel = new hcaInternalState(hca).channel;
-        let channelAtLoopEnd: stChannel[] = [];
+        let state = new hcaInternalState(hca);
+        let stateAtLoopEnd: hcaInternalState | undefined = undefined;
         for (let l = 0; l < info.format.blockCount; ++l) {
             let startOffset = info.dataOffset + info.blockSize * l;
             let block = hca.subarray(startOffset, startOffset + info.blockSize);
-            this.decodeBlock(info, channel, block, mode);
-            let wavebuff = this.writeToPCM(info, channel, mode, volume, writer, ftell);
+            this.decodeBlock(state, block, mode);
+            let wavebuff = this.writeToPCM(state, mode, volume, writer, ftell);
             ftell += wavebuff.length;
             if (info.loop.hasLoop && loop && l == info.loop.end - 1) {
                 // save the internal state at this moment, in order to rework the "seam"
-                for (let c of channel) {
-                    channelAtLoopEnd.push(c.clone());
-                }
+                stateAtLoopEnd = state.clone();
             }
         }
         // rework the "seam" if needed
         let seamBuff  = new Uint8Array(0);
         if (info.loop.hasLoop && loop) {
             // rewind the internal state
-            channel = channelAtLoopEnd;
+            if (stateAtLoopEnd == null) throw "stateAtLoopEnd == null";
+            state = stateAtLoopEnd;
             // re-decode
             let startOffset = info.dataOffset + info.blockSize * info.loop.start;
             let block = hca.subarray(startOffset, startOffset + info.blockSize);
-            this.decodeBlock(info, channel, block, mode);
-            seamBuff = this.writeToPCM(info, channel, mode, volume);
+            this.decodeBlock(state, block, mode);
+            seamBuff = this.writeToPCM(state, mode, volume);
         }
         // decoding done, then just copy looping part
         if (info.loop.hasLoop && loop) {
@@ -482,7 +481,7 @@ class HCA {
         return writer;
     }
 
-    decodeBlock(info: hcaInfo, channel: stChannel[], block: Uint8Array, mode = 32): void
+    decodeBlock(state: hcaInternalState, block: Uint8Array, mode = 32): void
     {
         switch (mode) {
             case 0: // float
@@ -491,6 +490,8 @@ class HCA {
             default:
                 mode = 32;
         }
+        let info = state.info;
+        let channel = state.channel;
         let data = new clData(info.blockSize, block);
         let magic = data.read(16);
         if (magic == 0xFFFF) {
@@ -504,7 +505,7 @@ class HCA {
             }
         }
     }
-    writeToPCM(info: hcaInfo, channel: stChannel[], mode = 32, volume = 1.0,
+    writeToPCM(state: hcaInternalState, mode = 32, volume = 1.0,
         writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined): Uint8Array
     {
         switch (mode) {
@@ -517,6 +518,8 @@ class HCA {
         if (volume > 1) volume = 1;
         else if (volume < 0) volume = 0;
         // create new writer if not specified
+        let info = state.info;
+        let channel = state.channel;
         if (writer == null) {
             writer = new Uint8Array(0x400 * info.format.channelCount * mode / 8);
             if (ftell == null) {
@@ -1052,6 +1055,11 @@ class crc16 {
 class hcaInternalState {
     info: hcaInfo;
     channel: stChannel[] = [];
+    clone(): hcaInternalState {
+        let ret = new hcaInternalState(this.info);
+        this.channel.forEach(c => ret.channel.push(c.clone()));
+        return ret;
+    }
     constructor (hcaOrInfo: Uint8Array | hcaInfo, decryptInPlace: boolean = false) {
         let info = this.info = hcaOrInfo instanceof hcaInfo ? hcaOrInfo : new hcaInfo(hcaOrInfo, decryptInPlace);
         let r = new Uint8Array(0x10);
