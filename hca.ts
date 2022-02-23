@@ -4,6 +4,7 @@ for (let i = 0; i < 64; i++) scaling_table[i] = Math.pow(2, (i - 63) * 53.0 / 12
 for (let i = 2; i < 127; i++) scale_conversion_table[i] = Math.pow(2, (i - 64) * 53.0 / 128.0);
 
 class hcaInfo {
+    rawHeader: Uint8Array;
     version = "";
     dataOffset = 0;
     format = {
@@ -35,8 +36,11 @@ class hcaInfo {
         let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
         return String.fromCharCode.apply(null, hex);
     }
+    clone(): hcaInfo {
+        return new hcaInfo(this.rawHeader);
+    }
     constructor (hca: Uint8Array, decryptInPlace: boolean = false) {
-        let p = new DataView(hca.buffer, 0, 8);
+        let p = new DataView(hca.buffer, hca.byteOffset, 8);
         let head = this.getSign(p, 0, decryptInPlace);
         if (head !== "HCA\0") {
             throw "Not a HCA file";
@@ -47,7 +51,8 @@ class hcaInfo {
         }
         this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
-        p = new DataView(hca.buffer, 0, this.dataOffset);
+        this.rawHeader = hca.slice(0, this.dataOffset);
+        p = new DataView(hca.buffer, hca.byteOffset, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
             let sign = this.getSign(p, ftell, decryptInPlace);
@@ -1162,8 +1167,7 @@ class hcaInternalState {
     constructor (hca: Uint8Array | hcaInternalState, decryptInPlace: boolean = false) {
         if (hca instanceof hcaInternalState) {
             let old = hca;
-            // this.info = old.info.clone();
-            this.info = old.info;
+            this.info = old.info.clone();
             this.channel = [];
             old.channel.forEach(c => this.channel.push(c.clone()));
         } else {
