@@ -98,11 +98,11 @@
                 document.getElementById("loopcountinput").value = 0;
             }
             t = new Date().getTime();
-            let hca = new HCA(key1, key2);
-            logTime("new hca");
-            hca.load(new Uint8Array(hcabuf));
-            logTime("load & decrypt");
-            const stream = hca.decode(hca.decrypted, 16, loop, 1.0);
+            let orig = new Uint8Array(hcabuf);
+            let decrypted = orig.slice(0);
+            HCA.decrypt(decrypted, "defaultkey"); // in-place decryption
+            logTime("decrypt");
+            const stream = HCA.decode(decrypted, 16, loop, 1.0);
             logTime("decode");
             whole_audio.src = URL.createObjectURL(new Blob([stream], {type : 'audio/x-wav'}));
         }
