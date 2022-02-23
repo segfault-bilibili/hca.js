@@ -334,7 +334,7 @@ class HCA {
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
         let state = new hcaInternalState(hca);
-        let stateAtLoopEnd: hcaInternalState | undefined = undefined;
+        let stateAtLoopEnd: hcaInternalState | undefined;
         for (let l = 0; l < info.format.blockCount; ++l) {
             let startOffset = info.dataOffset + info.blockSize * l;
             let block = hca.subarray(startOffset, startOffset + info.blockSize);
@@ -347,7 +347,7 @@ class HCA {
             }
         }
         // rework the "seam" if needed
-        let seamBuff  = new Uint8Array(0);
+        let seamBuff: Uint8Array | undefined;
         if (info.loop.hasLoop && loop) {
             // rewind the internal state
             if (stateAtLoopEnd == null) throw "stateAtLoopEnd == null";
@@ -373,6 +373,7 @@ class HCA {
             for (let i = 0; i < loop; i++) {
                 // copy the "seam"
                 let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, blockSizeInWav);
+                if (seamBuff == null) throw "seamBuff == null";
                 dst.set(seamBuff);
                 // copy remaining part
                 dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav + blockSizeInWav, loopSizeInWav - blockSizeInWav);
@@ -1120,14 +1121,8 @@ class hcaCipher {
 
 class hcaInternalState {
     info: hcaInfo;
-    channel: hcaChanCtx[] = [];
-    clone(): hcaInternalState {
-        let ret = new hcaInternalState(this.info);
-        this.channel.forEach(c => ret.channel.push(c.clone()));
-        return ret;
-    }
-    constructor (hcaOrInfo: Uint8Array | hcaInfo, decryptInPlace: boolean = false) {
-        let info = this.info = hcaOrInfo instanceof hcaInfo ? hcaOrInfo : new hcaInfo(hcaOrInfo, decryptInPlace);
+    channel: hcaChanCtx[];
+    private initialize(info: hcaInfo): hcaChanCtx[] {
         let r = new Uint8Array(0x10);
         let b = Math.floor(info.format.channelCount / info.compParam[2]);
         if (info.compParam[6] && b > 1) {
@@ -1156,12 +1151,30 @@ class hcaInternalState {
                 default:
             }
         }
+        let channel = [];
         for (let i = 0; i < info.format.channelCount; ++i) {
             let c = new hcaChanCtx();
             c.type = r[i];
             c.value3 = c.value.subarray(info.compParam[5] + info.compParam[6]);
             c.count = info.compParam[5] + (r[i] != 2 ? info.compParam[6] : 0);
-            this.channel.push(c);
+            channel.push(c);
+        }
+        return channel;
+    }
+    clone(): hcaInternalState {
+        let ret = new hcaInternalState(this);
+        return ret;
+    }
+    constructor (hca: Uint8Array | hcaInternalState, decryptInPlace: boolean = false) {
+        if (hca instanceof hcaInternalState) {
+            let old = hca;
+            // this.info = old.info.clone();
+            this.info = old.info;
+            this.channel = [];
+            old.channel.forEach(c => this.channel.push(c.clone()));
+        } else {
+            this.info = new hcaInfo(hca, decryptInPlace);
+            this.channel = this.initialize(this.info);
         }
     }
 }
