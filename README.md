@@ -12,10 +12,10 @@ Decrypt & decode hca(2.0) file in browser.
 - [x] decrypt
 - [x] decode
 - [x] wave mode (8/16/24/32/float)
-- [ ] loop
+- [x] loop
 - [ ] volume
 - [ ] encode
-- [ ] encrypt
+- [x] encrypt
 - [ ] recode (ogg/aac/mp3/flac)
 - [ ] FFT/DCT/DCTM/IDCTM (?)
 
