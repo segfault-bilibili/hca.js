@@ -432,7 +432,7 @@ class HCA {
         p.setUint32(ftell, data.id, true);
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
-        let channel = this.initializeDecoder(info);
+        let channel = new hcaInternalState(hca).channel;
         let channelAtLoopEnd: stChannel[] = [];
         for (let l = 0; l < info.format.blockCount; ++l) {
             let startOffset = info.dataOffset + info.blockSize * l;
@@ -480,45 +480,6 @@ class HCA {
             }
         }
         return writer;
-    }
-    initializeDecoder(info: hcaInfo): stChannel[] {
-        let r = new Uint8Array(0x10);
-        let b = Math.floor(info.format.channelCount / info.compParam[2]);
-        if (info.compParam[6] && b > 1) {
-            for (let i = 0; i < info.compParam[2]; ++i) switch (b) {
-                case 8:
-                    r[i * b + 6] = 1;
-                    r[i * b + 7] = 2;
-                case 7:
-                case 6:
-                    r[i * b + 4] = 1;
-                    r[i * b + 5] = 2;
-                case 5:
-                    if (b == 5 && info.compParam[3] <= 2) {
-                        r[i * b + 3] = 1;
-                        r[i * b + 4] = 2;
-                    }
-                case 4:
-                    if (b == 4 && info.compParam[3] == 0) {
-                        r[i * b + 2] = 1;
-                        r[i * b + 3] = 2;
-                    }
-                case 3:
-                case 2:
-                    r[i * b] = 1;
-                    r[i * b + 1] = 2;
-                default:
-            }
-        }
-        let channel: stChannel[] = []
-        for (let i = 0; i < info.format.channelCount; ++i) {
-            let c = new stChannel();
-            c.type = r[i];
-            c.value3 = c.value.subarray(info.compParam[5] + info.compParam[6]);
-            c.count = info.compParam[5] + (r[i] != 2 ? info.compParam[6] : 0);
-            channel.push(c);
-        }
-        return channel;
     }
 
     decodeBlock(info: hcaInfo, channel: stChannel[], block: Uint8Array, mode = 32): void
@@ -1085,5 +1046,48 @@ class crc16 {
         while (i < size)
             sum = ((sum << 8) ^ this._v[(sum >> 8) ^ data[i++]]) & 0x0000ffff;
         return sum & 0x0000ffff;
+    }
+}
+
+class hcaInternalState {
+    info: hcaInfo;
+    channel: stChannel[] = [];
+    constructor (hcaOrInfo: Uint8Array | hcaInfo, decryptInPlace: boolean = false) {
+        let info = this.info = hcaOrInfo instanceof hcaInfo ? hcaOrInfo : new hcaInfo(hcaOrInfo, decryptInPlace);
+        let r = new Uint8Array(0x10);
+        let b = Math.floor(info.format.channelCount / info.compParam[2]);
+        if (info.compParam[6] && b > 1) {
+            for (let i = 0; i < info.compParam[2]; ++i) switch (b) {
+                case 8:
+                    r[i * b + 6] = 1;
+                    r[i * b + 7] = 2;
+                case 7:
+                case 6:
+                    r[i * b + 4] = 1;
+                    r[i * b + 5] = 2;
+                case 5:
+                    if (b == 5 && info.compParam[3] <= 2) {
+                        r[i * b + 3] = 1;
+                        r[i * b + 4] = 2;
+                    }
+                case 4:
+                    if (b == 4 && info.compParam[3] == 0) {
+                        r[i * b + 2] = 1;
+                        r[i * b + 3] = 2;
+                    }
+                case 3:
+                case 2:
+                    r[i * b] = 1;
+                    r[i * b + 1] = 2;
+                default:
+            }
+        }
+        for (let i = 0; i < info.format.channelCount; ++i) {
+            let c = new stChannel();
+            c.type = r[i];
+            c.value3 = c.value.subarray(info.compParam[5] + info.compParam[6]);
+            c.count = info.compParam[5] + (r[i] != 2 ? info.compParam[6] : 0);
+            this.channel.push(c);
+        }
     }
 }
