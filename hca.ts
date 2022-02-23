@@ -142,7 +142,7 @@ class HCA {
     constructor () {
     }
 
-    decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array {
+    static decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array {
         // in-place decryption
         // parse & decrypt (in-place) header
         let info = new hcaInfo(hca, hcaCipher.isHCAHeaderMasked(hca)); // throws "Not a HCA file" if mismatch
@@ -176,7 +176,7 @@ class HCA {
         }
         return hca;
     }
-    decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0) {
+    static decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0) {
         switch (mode) {
             case 0: // float
             case 8: case 16: case 24: case 32: // integer
@@ -382,7 +382,7 @@ class HCA {
         return writer;
     }
 
-    decodeBlock(state: hcaInternalState, block: Uint8Array, mode = 32): void
+    static decodeBlock(state: hcaInternalState, block: Uint8Array, mode = 32): void
     {
         switch (mode) {
             case 0: // float
@@ -406,7 +406,7 @@ class HCA {
             }
         }
     }
-    writeToPCM(state: hcaInternalState, mode = 32, volume = 1.0,
+    static writeToPCM(state: hcaInternalState, mode = 32, volume = 1.0,
         writer: Uint8Array | undefined = undefined, ftell: number | undefined = undefined): Uint8Array
     {
         switch (mode) {
