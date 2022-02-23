@@ -86,7 +86,7 @@ class hcaInfo {
                 case "comp":
                     this.blockSize = p.getUint16(ftell + 4);
                     this.bps = this.format.samplingRate * this.blockSize / 128000.0;
-                    this.compParam =  new Uint8Array(hca.buffer, ftell + 6, 9);
+                    this.compParam = hca.slice(ftell + 6, ftell + 6 + 9);
                     ftell += 16;
                     break;
                 case "dec\0":
