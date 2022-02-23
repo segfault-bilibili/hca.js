@@ -130,8 +130,6 @@ class hcaInfo {
 }
 
 class HCA {
-    key1: Uint32Array;
-    key2: Uint32Array;
     static scaling_table = scaling_table;
     static scale_conversion_table = scale_conversion_table;
     static range_table = new Float64Array([
@@ -141,125 +139,28 @@ class HCA {
         2.0 / 511, 2.0 / 1023, 2.0 / 2047, 2.0 / 4095
     ]);
 
-    parseKey (key:any) {
-        let buff = new Uint8Array(4);
-        try { switch (typeof key) {
-            case "string":
-                key = parseInt(key) || parseInt("0x" + key);
-            case 'number':
-                buff[0] = key & 0xff;
-                buff[1] = key >> 8 & 0xff;
-                buff[2] = key >> 16 & 0xff;
-                buff[3] = key >> 24 & 0xff;
-                break;
-            case 'object':
-                if (key instanceof Uint8Array) return new Uint32Array(key.buffer);
-                if (key instanceof Uint32Array) return key;
-        } } catch {
-            // key parse error
-        } finally {
-            return new Uint32Array(buff.buffer);
-        }
-    }
-    constructor (key1:any = null, key2:any = 0) {
-        if (key1 === null) {
-            key1 = this.parseKey(0x01395C51);
-            key2 = this.parseKey(0x00000000);
-        } else if (typeof key1 === 'number') {
-            key1 = this.parseKey(key1);
-            key2 = this.parseKey(key2 ? key2 : key1 >> 32);
-        } else if (typeof key1 === 'string') {
-            key1 = parseInt(key1) || parseInt("0x" + key1);
-            key1 = this.parseKey(key1);
-            key2 = this.parseKey(key2 ? key2 : key1 >> 32);
-        } else {
-            key1 = this.parseKey(key1);
-            key2 = this.parseKey(key2);
-        }
-        this.key1 = key1;
-        this.key2 = key2;
-    }
-    private init1(_table: Uint8Array): Uint8Array {
-        for (let i = 1, v = 0; i < 0xFF; i++) {
-            v = (v * 13 + 11) & 0xFF;
-            if (v == 0 || v == 0xFF)v = (v * 13 + 11) & 0xFF;
-            _table[i] = v;
-        }
-        _table[0] = 0;
-        _table[0xFF] = 0xFF;
-        return _table;
-    }
-    private init56(_table: Uint8Array, key1: Uint32Array, key2: Uint32Array): Uint8Array {
-        let t1 = new Uint8Array(8);
-        if (!key1[0])key2[0]--;
-        key1[0]--;
-        t1.set(new Uint8Array(key1.buffer));
-        t1.set(new Uint8Array(key2.buffer), 4);
-        let t2 = new Uint8Array([
-            t1[1], t1[1] ^ t1[6], t1[2] ^ t1[3],
-            t1[2], t1[2] ^ t1[1], t1[3] ^ t1[4],
-            t1[3], t1[3] ^ t1[2], t1[4] ^ t1[5],
-            t1[4], t1[4] ^ t1[3], t1[5] ^ t1[6],
-            t1[5], t1[5] ^ t1[4], t1[6] ^ t1[1],
-            t1[6]
-        ]);
-        let t3 = new Uint8Array(0x100);
-        let t31 = new Uint8Array(0x10);
-        let t32 = new Uint8Array(0x10);
-        this.createTable(t31, t1[0]);
-        for (let i = 0, t = 0; i < 0x10; i++) {
-            this.createTable(t32, t2[i]);
-            let v = t31[i] << 4;
-            for (let j = 0; j < 0x10; j++) {
-                t3[t++] = v | t32[j];
-            }
-        }
-        for (let i = 0, v = 0, t = 1; i < 0x100; i++) {
-            v = (v + 0x11) & 0xFF;
-            let a = t3[v];
-            if (a != 0 && a != 0xFF) _table[t++] = a;
-        }
-        _table[0] = 0;
-        _table[0xFF] = 0xFF;
-        return _table;
-    }
-    private createTable(r: Uint8Array, key: number) {
-        let mul = ((key & 1) << 3) | 5;
-        let add = (key & 0xE) | 1;
-        let t = 0;
-        key >>= 4;
-        for (let i = 0; i < 0x10; i++) {
-            key = (key*mul + add) & 0xF;
-            r[t++] = key;
-        }
+    constructor () {
     }
 
-    mask(_table: Uint8Array, block: Uint8Array, offset: number, size: number) {
-        for (let i = 0; i < size; i++) block[offset + i] = _table[block[offset + i]];
-    }
-    isHCAHeaderEncrypted(hca: Uint8Array): boolean {
-        if (hca[0] & 0x80 || hca[1] & 0x80 || hca[2] & 0x80) return true;
-        else return false;
-    }
-    decrypt(hca: Uint8Array): Uint8Array {
+    decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array {
         // in-place decryption
         // parse & decrypt (in-place) header
-        let info = new hcaInfo(hca, this.isHCAHeaderEncrypted(hca)); // throws "Not a HCA file" if mismatch
+        let info = new hcaInfo(hca, hcaCipher.isHCAHeaderMasked(hca)); // throws "Not a HCA file" if mismatch
         if (!info.ciph.hasCipher) {
             return hca; // not encrypted
         }
-        let _table = new Uint8Array(0x100);
+        let cipher: hcaCipher;
         switch (info.ciph.type) {
             case 0:
                 // not encrypted
                 return hca;
             case 1:
                 // encrypted with "no key"
-                this.init1(_table);
+                cipher = new hcaCipher("none"); // ignore given keys
                 break;
             case 0x38:
-                // encrypted with keys - will yield incorrect waveform with incorrect keys!
-                this.init56(_table, this.key1, this.key2);
+                // encrypted with keys - will yield incorrect waveform if incorrect keys are given!
+                cipher = new hcaCipher(key1, key2);
                 break;
             default:
                 throw "unknown ciph.type";
@@ -267,7 +168,7 @@ class HCA {
         for (let i = 0; i < info.format.blockCount; ++i) {
             // decrypt block
             let ftell = info.dataOffset + info.blockSize * i;
-            this.mask(_table, hca, ftell, info.blockSize - 2);
+            cipher.mask(hca, ftell, info.blockSize - 2);
             // recalculate checksum
             let p = new DataView(hca.buffer, ftell + info.blockSize - 2, 2);
             let newCrc16 = crc16.calc(hca.subarray(ftell, ftell + info.blockSize - 2), info.blockSize - 2);
@@ -285,7 +186,7 @@ class HCA {
         }
         if (volume > 1) volume = 1;
         else if (volume < 0) volume = 0;
-        let info = new hcaInfo(hca, this.isHCAHeaderEncrypted(hca)); // throws "Not a HCA file" if mismatch
+        let info = new hcaInfo(hca, hcaCipher.isHCAHeaderMasked(hca)); // throws "Not a HCA file" if mismatch
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
@@ -1049,6 +950,154 @@ class crc16 {
         while (i < size)
             sum = ((sum << 8) ^ this._v[(sum >> 8) ^ data[i++]]) & 0x0000ffff;
         return sum & 0x0000ffff;
+    }
+}
+
+class hcaCipher {
+    static readonly defKey1 = 0x01395C51;
+    static readonly defKey2 = 0x00000000;
+    private key1buf = new ArrayBuffer(4);
+    private key2buf = new ArrayBuffer(4);
+    private dv1: DataView;
+    private dv2: DataView;
+    private _table = new Uint8Array(256);
+    private init1(): void {
+        for (let i = 1, v = 0; i < 0xFF; i++) {
+            v = (v * 13 + 11) & 0xFF;
+            if (v == 0 || v == 0xFF)v = (v * 13 + 11) & 0xFF;
+            this._table[i] = v;
+        }
+        this._table[0] = 0;
+        this._table[0xFF] = 0xFF;
+    }
+    private init56(): void {
+        let key1 = this.getKey1();
+        let key2 = this.getKey2();
+        if (!key1) key2--;
+        key1--;
+        this.dv1.setUint32(0, key1, true);
+        this.dv2.setUint32(0, key2, true);
+        let t1 = this.getBytesOfTwoKeys();
+        let t2 = new Uint8Array([
+            t1[1], t1[1] ^ t1[6], t1[2] ^ t1[3],
+            t1[2], t1[2] ^ t1[1], t1[3] ^ t1[4],
+            t1[3], t1[3] ^ t1[2], t1[4] ^ t1[5],
+            t1[4], t1[4] ^ t1[3], t1[5] ^ t1[6],
+            t1[5], t1[5] ^ t1[4], t1[6] ^ t1[1],
+            t1[6]
+        ]);
+        let t3 = new Uint8Array(0x100);
+        let t31 = new Uint8Array(0x10);
+        let t32 = new Uint8Array(0x10);
+        this.createTable(t31, t1[0]);
+        for (let i = 0, t = 0; i < 0x10; i++) {
+            this.createTable(t32, t2[i]);
+            let v = t31[i] << 4;
+            for (let j = 0; j < 0x10; j++) {
+                t3[t++] = v | t32[j];
+            }
+        }
+        for (let i = 0, v = 0, t = 1; i < 0x100; i++) {
+            v = (v + 0x11) & 0xFF;
+            let a = t3[v];
+            if (a != 0 && a != 0xFF) this._table[t++] = a;
+        }
+        this._table[0] = 0;
+        this._table[0xFF] = 0xFF;
+    }
+    private createTable(r: Uint8Array, key: number): void {
+        let mul = ((key & 1) << 3) | 5;
+        let add = (key & 0xE) | 1;
+        let t = 0;
+        key >>= 4;
+        for (let i = 0; i < 0x10; i++) {
+            key = (key*mul + add) & 0xF;
+            r[t++] = key;
+        }
+    }
+    getKey1(): number {
+        return this.dv1.getUint32(0, true);
+    }
+    getKey2(): number {
+        return this.dv2.getUint32(0, true);
+    }
+    getBytesOfTwoKeys(): Uint8Array {
+        let buf = new Uint8Array(8);
+        buf.set(new Uint8Array(this.key1buf), 0);
+        buf.set(new Uint8Array(this.key2buf), 4);
+        return buf;
+    }
+    setKey1(key: number): void {
+        this.dv1.setUint32(0, key, true);
+        this.init56();
+    }
+    setKey2(key: number): void {
+        this.dv2.setUint32(0, key, true);
+        this.init56();
+    }
+    setKeys(key1: number, key2: number): void {
+        this.dv1.setUint32(0, key1, true);
+        this.dv2.setUint32(0, key2, true);
+        this.init56();
+    }
+    setToDefKeys(): void {
+        this.setKeys(hcaCipher.defKey1, hcaCipher.defKey2);
+    }
+    setToNoKey(): void {
+        this.init1();
+    }
+    mask(block: Uint8Array, offset: number, size: number) {
+        // encrypt or decrypt block data
+        for (let i = 0; i < size; i++) block[offset + i] = this._table[block[offset + i]];
+    }
+    static isHCAHeaderMasked(hca: Uint8Array): boolean {
+        if (hca[0] & 0x80 || hca[1] & 0x80 || hca[2] & 0x80) return true;
+        else return false;
+    }
+    static parseKey(key: any): number {
+        switch (typeof key) {
+            case "number":
+                return key;
+            case "string":
+                // avoid ambiguity: always treat as hex
+                if (!key.match(/^0x/)) key = "0x" + key;
+                return parseInt(key);
+            case "object":
+                // avoid endianness ambiguity: only accepting Uint8Array, then read as little endian
+                if (key instanceof Uint8Array && key.byteLength == 4) {
+                    return new DataView(key.buffer, key.byteOffset, key.byteLength).getUint32(0, true);
+                }
+            default:
+                throw "can only accept number/hex string/Uint8Array[4]";
+        }
+    }
+    constructor (key1: any = undefined, key2: any = undefined) {
+        this.dv1 = new DataView(this.key1buf);
+        this.dv2 = new DataView(this.key2buf);
+        if (key1 == null) throw "no keys given. use \"defaultkey\" if you want to use the default key";
+        switch (key1) {
+            case "none":
+            case "nokey":
+            case "noKey":
+            case "no key":
+            case "no_Key":
+                this.setToNoKey();
+                break;
+            case "defaultkey":
+            case "defaultKey":
+            case "default key":
+            case "default_key":
+                this.setToDefKeys();
+                break;
+            default:
+                key1 = hcaCipher.parseKey(key1);
+                if (key2 == null) {
+                    key2 = key1 >> 32;
+                } else {
+                    key2 = hcaCipher.parseKey(key2);
+                }
+                this.setKeys(key1, key2);
+        }
     }
 }
 
