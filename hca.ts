@@ -4,7 +4,7 @@ for (let i = 0; i < 64; i++) scaling_table[i] = Math.pow(2, (i - 63) * 53.0 / 12
 for (let i = 2; i < 127; i++) scale_conversion_table[i] = Math.pow(2, (i - 64) * 53.0 / 128.0);
 
 class hcaInfo {
-    rawHeader: Uint8Array;
+    private rawHeader: Uint8Array;
     version = "";
     dataOffset = 0;
     format = {
@@ -16,6 +16,7 @@ class hcaInfo {
     }
     blockSize = 0;
     hasHeader: Record<string, boolean> = {};
+    headerOffset: Record<string, [number, number]> = {}; // [start (inclusive), end (exclusive)]
     bps = 0;
     compParam = new Uint8Array(9);
     ath = 0;
@@ -27,11 +28,19 @@ class hcaInfo {
     cipher = 0;
     rva = 0.0;
     comment = "";
-    private getSign(raw: DataView, offset = 0, resign = false) {
+    private getSign(raw: DataView, offset = 0, writeInPlace: boolean, encrypt: boolean) {
         let magic = raw.getUint32(offset, true);
-        if (magic & 0x080808080) {
+        let strLen = 4;
+        for (let i = 0; i < 4; i++) {
+            if (raw.getUint8(offset + i) == 0) {
+                strLen = i;
+                break;
+            }
+        }
+        if (strLen > 0) {
+            let mask = 0x80808080 >>> 8 * (4 - strLen);
             magic &= 0x7f7f7f7f;
-            if (resign) raw.setUint32(offset, magic, true);
+            if (writeInPlace) raw.setUint32(offset, encrypt ? magic | mask : magic, true);
         }
         let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
         return String.fromCharCode.apply(null, hex);
@@ -39,9 +48,9 @@ class hcaInfo {
     clone(): hcaInfo {
         return new hcaInfo(this.rawHeader);
     }
-    constructor (hca: Uint8Array, decryptInPlace: boolean = false) {
+    private parseHeader(hca: Uint8Array, writeInPlace: boolean, encrypt: boolean, modList: Record<string, Uint8Array>) {
         let p = new DataView(hca.buffer, hca.byteOffset, 8);
-        let head = this.getSign(p, 0, decryptInPlace);
+        let head = this.getSign(p, 0, writeInPlace, encrypt);
         if (head !== "HCA\0") {
             throw "Not a HCA file";
         }
@@ -51,13 +60,20 @@ class hcaInfo {
         }
         this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
-        this.rawHeader = hca.slice(0, this.dataOffset);
         p = new DataView(hca.buffer, hca.byteOffset, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
-            let sign = this.getSign(p, ftell, decryptInPlace);
+            let lastFtell = ftell;
+            // get the sig
+            let sign = this.getSign(p, ftell, writeInPlace, encrypt);
+            // record hasHeader
             this.hasHeader[sign] = true;
-            if (sign == "pad\0") break;
+            // padding should be the last one
+            if (sign == "pad\0") {
+                this.headerOffset[sign] = [ftell, this.dataOffset - 2];
+                break;
+            }
+            // parse data accordingly
             switch (sign) {
                 case "fmt\0":
                     this.format.channelCount = p.getUint8(ftell + 4);
@@ -113,18 +129,91 @@ class hcaInfo {
                     let jisdecoder = new TextDecoder('shift-jis');
                     this.comment = jisdecoder.decode(hca.slice(ftell + 5, ftell + 5 + len));
                     break;
-                default: break;
+                default: throw "unknown header sig";
+            }
+            // record headerOffset
+            this.headerOffset[sign] = [lastFtell, ftell];
+            // do modification if needed
+            let sectionDataLen = ftell - lastFtell - 4;
+            let newData = modList[sign];
+            if (newData != null) {
+                if (newData.byteLength > sectionDataLen) throw "newData.byteLength > sectionDataLen";
+                hca.set(newData, lastFtell + 4);
             }
         }
         this.compParam[2] = this.compParam[2] || 1;
         let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
         let _b = this.compParam[7];
         this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
-        if (decryptInPlace) {
+        if (writeInPlace) {
             // recalculate checksum
             let newCrc16 = crc16.calc(hca, this.dataOffset - 2);
             p.setUint16(this.dataOffset - 2, newCrc16);
         }
+        let rawHeader = hca.slice(0, this.dataOffset);
+        return rawHeader;
+    }
+    private isHeaderChanged(hca: Uint8Array): boolean {
+        if (hca.length >= this.rawHeader.length) {
+            for (let i = 0; i < this.rawHeader.length; i++) {
+                if (hca[i] != this.rawHeader[i]) {
+                    return true;
+                }
+            }
+        } else return true;
+        return false;
+    }
+    modify(hca: Uint8Array, sig: string, newData: Uint8Array): void {
+        // reparse header if needed
+        if (this.isHeaderChanged(hca)) {
+            this.parseHeader(hca, false, false, {});
+        }
+        // modify data in-place
+        let modList: Record<string, Uint8Array> = {};
+        modList[sig] = newData;
+        let encrypt = this.cipher != 0;
+        if (sig === "ciph") {
+            encrypt = new DataView(newData.buffer, newData.byteOffset, newData.byteLength).getUint16(0) != 0;
+        }
+        this.rawHeader = this.parseHeader(hca, true, encrypt, modList);
+    }
+    static addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Uint8Array {
+        // sig must consist of 4 ASCII characters
+        if (sig.length != 4) throw "sig.length != 4";
+        let newSig = new Uint8Array(4);
+        for (let i = 0; i < 4; i++) {
+            let c = sig.charCodeAt(i);
+            if (c >= 0x80) throw "sig.charCodeAt(i) >= 0x80";
+            newSig[i] = c;
+        }
+        let info = new hcaInfo(hca);
+        // prepare a newly allocated buffer
+        let newHca = new Uint8Array(hca.byteLength + newSig.byteLength + newData.byteLength);
+        let insertOffset = info.headerOffset["pad\0"][0];
+        // copy existing headers (except padding)
+        newHca.set(hca.subarray(0, insertOffset), 0);
+        // copy inserted header
+        newHca.set(newSig, insertOffset);
+        newHca.set(newData, insertOffset + newSig.byteLength);
+        // copy remaining data (padding and blocks)
+        newHca.set(hca.subarray(insertOffset, hca.byteLength), insertOffset + newSig.byteLength + newData.byteLength);
+        // update dataOffset
+        info.dataOffset += newSig.byteLength + newData.byteLength;
+        let p = new DataView(newHca.buffer, newHca.byteOffset, newHca.byteLength);
+        p.setInt16(6, info.dataOffset);
+        // recalculate checksum
+        let newCrc16 = crc16.calc(newHca, info.dataOffset - 2);
+        p.setUint16(info.dataOffset - 2, newCrc16);
+        return newHca;
+    }
+    static addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Uint8Array {
+        let newData = new Uint8Array(2);
+        if (cipherType != null) new DataView(newData.buffer).setUint16(0, cipherType);
+        return this.addHeader(hca, "ciph", newData);
+    }
+    constructor (hca: Uint8Array, writeInPlace: boolean = false, encrypt: boolean = false) {
+        // if writeInPlace == true, (un)mask the header sigs in-place
+        this.rawHeader = this.parseHeader(hca, writeInPlace, encrypt, {});
     }
 }
 
@@ -142,30 +231,42 @@ class HCA {
     }
 
     static decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array {
-        // in-place decryption
-        // parse & decrypt (in-place) header
-        let info = new hcaInfo(hca, hcaCipher.isHCAHeaderMasked(hca)); // throws "Not a HCA file" if mismatch
-        if (!info.hasHeader["ciph"]) {
+        return this.decryptOrEncrypt(hca, false, key1, key2);
+    }
+    static encrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array {
+        return this.decryptOrEncrypt(hca, true, key1, key2);
+    }
+    static decryptOrEncrypt(hca: Uint8Array, encrypt: boolean, key1: any = undefined, key2: any = undefined): Uint8Array {
+        // in-place decryption/encryption
+        // parse header
+        let info = new hcaInfo(hca); // throws "Not a HCA file" if mismatch
+        if (!encrypt && !info.hasHeader["ciph"]) {
             return hca; // not encrypted
+        } else if (encrypt && !info.hasHeader["ciph"]) {
+            throw "Input hca lacks \"ciph\" header section. Please call hcaInfo.addCipherHeader(hca) first.";
         }
         let cipher: hcaCipher;
         switch (info.cipher) {
             case 0:
                 // not encrypted
-                return hca;
+                if (encrypt) cipher = new hcaCipher(key1, key2).invertTable();
+                else return hca;
+                break;
             case 1:
                 // encrypted with "no key"
-                cipher = new hcaCipher("none"); // ignore given keys
+                if (encrypt) throw "already encrypted with \"no key\", please decrypt first";
+                else cipher = new hcaCipher("none"); // ignore given keys
                 break;
             case 0x38:
                 // encrypted with keys - will yield incorrect waveform if incorrect keys are given!
-                cipher = new hcaCipher(key1, key2);
+                if (encrypt) throw "already encrypted with specific keys, please decrypt with correct keys first";
+                else cipher = new hcaCipher(key1, key2);
                 break;
             default:
                 throw "unknown ciph.type";
         }
         for (let i = 0; i < info.format.blockCount; ++i) {
-            // decrypt block
+            // decrypt/encrypt block
             let ftell = info.dataOffset + info.blockSize * i;
             cipher.mask(hca, ftell, info.blockSize - 2);
             // recalculate checksum
@@ -173,6 +274,11 @@ class HCA {
             let newCrc16 = crc16.calc(hca.subarray(ftell, ftell + info.blockSize - 2), info.blockSize - 2);
             p.setUint16(0, newCrc16);
         }
+        // re-(un)mask headers, and set ciph header to new value
+        let newCipherData = new Uint8Array(2);
+        let newCipherType = encrypt ? cipher.getType() : 0;
+        new DataView(newCipherData.buffer).setUint16(0, newCipherType);
+        info.modify(hca, "ciph", newCipherData);
         return hca;
     }
     static decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0) {
@@ -185,7 +291,7 @@ class HCA {
         }
         if (volume > 1) volume = 1;
         else if (volume < 0) volume = 0;
-        let info = new hcaInfo(hca, hcaCipher.isHCAHeaderMasked(hca)); // throws "Not a HCA file" if mismatch
+        let info = new hcaInfo(hca); // throws "Not a HCA file" if mismatch
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
@@ -973,6 +1079,8 @@ class crc16 {
 class hcaCipher {
     static readonly defKey1 = 0x01395C51;
     static readonly defKey2 = 0x00000000;
+    private cipherType = 0;
+    private encrypt = false;
     private key1buf = new ArrayBuffer(4);
     private key2buf = new ArrayBuffer(4);
     private dv1: DataView;
@@ -1032,6 +1140,31 @@ class hcaCipher {
             r[t++] = key;
         }
     }
+    invertTable(): hcaCipher {
+        // actually, this method switch the mode between encrypt/decrypt
+        this.encrypt = !this.encrypt;
+        let _old_table = this._table.slice(0);
+        let bitMap = new Uint16Array(16);
+        for (let i = 0; i < 256; i++) {
+            // invert key and value
+            let key = _old_table[i];
+            let val = i;
+            // check for inconsistency
+            let higher4 = key >> 4 & 0x0F;
+            let lower4 = key & 0x0F;
+            let flag = 0x01 << lower4;
+            if (bitMap[higher4] & flag) throw "_table is not bijective";
+            // update table
+            this._table[key] = val;
+        }
+        return this;
+    }
+    getType(): number {
+        return this.cipherType;
+    }
+    getEncrypt(): boolean {
+        return this.encrypt;
+    }
     getKey1(): number {
         return this.dv1.getUint32(0, true);
     }
@@ -1044,30 +1177,39 @@ class hcaCipher {
         buf.set(new Uint8Array(this.key2buf), 4);
         return buf;
     }
-    setKey1(key: number): void {
+    setKey1(key: number): hcaCipher {
         this.dv1.setUint32(0, key, true);
         this.init56();
+        this.cipherType = 0x38;
+        return this;
     }
-    setKey2(key: number): void {
+    setKey2(key: number): hcaCipher {
         this.dv2.setUint32(0, key, true);
         this.init56();
+        this.cipherType = 0x38;
+        return this;
     }
-    setKeys(key1: number, key2: number): void {
+    setKeys(key1: number, key2: number): hcaCipher {
         this.dv1.setUint32(0, key1, true);
         this.dv2.setUint32(0, key2, true);
         this.init56();
+        this.cipherType = 0x38;
+        return this;
     }
-    setToDefKeys(): void {
-        this.setKeys(hcaCipher.defKey1, hcaCipher.defKey2);
+    setToDefKeys(): hcaCipher {
+        return this.setKeys(hcaCipher.defKey1, hcaCipher.defKey2);
     }
-    setToNoKey(): void {
+    setToNoKey(): hcaCipher {
         this.init1();
+        this.cipherType = 0x01;
+        return this;
     }
-    mask(block: Uint8Array, offset: number, size: number) {
+    mask(block: Uint8Array, offset: number, size: number): void {
         // encrypt or decrypt block data
         for (let i = 0; i < size; i++) block[offset + i] = this._table[block[offset + i]];
     }
     static isHCAHeaderMasked(hca: Uint8Array): boolean {
+        // fast & dirty way to determine whether encrypted, not recommended
         if (hca[0] & 0x80 || hca[1] & 0x80 || hca[2] & 0x80) return true;
         else return false;
     }
@@ -1164,14 +1306,14 @@ class hcaInternalState {
         let ret = new hcaInternalState(this);
         return ret;
     }
-    constructor (hca: Uint8Array | hcaInternalState, decryptInPlace: boolean = false) {
+    constructor (hca: Uint8Array | hcaInternalState) {
         if (hca instanceof hcaInternalState) {
             let old = hca;
             this.info = old.info.clone();
             this.channel = [];
             old.channel.forEach(c => this.channel.push(c.clone()));
         } else {
-            this.info = new hcaInfo(hca, decryptInPlace);
+            this.info = new hcaInfo(hca);
             this.channel = this.initialize(this.info);
         }
     }
