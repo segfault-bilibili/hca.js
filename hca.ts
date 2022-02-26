@@ -43,7 +43,7 @@ class HCAInfo {
             if (writeInPlace) raw.setUint32(offset, encrypt ? magic | mask : magic, true);
         }
         let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
-        return String.fromCharCode.apply(null, hex);
+        return String.fromCharCode.apply(String, hex);
     }
     clone(): HCAInfo {
         return new HCAInfo(this.rawHeader);
