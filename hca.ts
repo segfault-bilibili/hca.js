@@ -291,7 +291,8 @@ class HCA {
         }
         if (volume > 1) volume = 1;
         else if (volume < 0) volume = 0;
-        let info = new HCAInfo(hca); // throws "Not a HCA file" if mismatch
+        let state = new HCAInternalState(hca); // throws "Not a HCA file" if mismatch
+        let info = state.info;
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
@@ -438,7 +439,6 @@ class HCA {
         p.setUint32(ftell, data.id, true);
         p.setUint32(ftell + 4, data.size, true);
         ftell += 8;
-        let state = new HCAInternalState(hca);
         let stateAtLoopEnd: HCAInternalState | undefined;
         for (let l = 0; l < info.format.blockCount; ++l) {
             let startOffset = info.dataOffset + info.blockSize * l;
