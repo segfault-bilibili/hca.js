@@ -52,7 +52,7 @@ class HCAInfo {
         let p = new DataView(hca.buffer, hca.byteOffset, 8);
         let head = this.getSign(p, 0, writeInPlace, encrypt);
         if (head !== "HCA\0") {
-            throw "Not a HCA file";
+            throw new Error("Not a HCA file");
         }
         const version = {
             main: p.getUint8(4),
@@ -129,7 +129,7 @@ class HCAInfo {
                     let jisdecoder = new TextDecoder('shift-jis');
                     this.comment = jisdecoder.decode(hca.slice(ftell + 5, ftell + 5 + len));
                     break;
-                default: throw "unknown header sig";
+                default: throw new Error("unknown header sig");
             }
             // record headerOffset
             this.headerOffset[sign] = [lastFtell, ftell];
@@ -137,7 +137,7 @@ class HCAInfo {
             let sectionDataLen = ftell - lastFtell - 4;
             let newData = modList[sign];
             if (newData != null) {
-                if (newData.byteLength > sectionDataLen) throw "newData.byteLength > sectionDataLen";
+                if (newData.byteLength > sectionDataLen) throw new Error("newData.byteLength > sectionDataLen");
                 hca.set(newData, lastFtell + 4);
             }
         }
@@ -179,11 +179,11 @@ class HCAInfo {
     }
     static addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Uint8Array {
         // sig must consist of 4 ASCII characters
-        if (sig.length != 4) throw "sig.length != 4";
+        if (sig.length != 4) throw new Error("sig.length != 4");
         let newSig = new Uint8Array(4);
         for (let i = 0; i < 4; i++) {
             let c = sig.charCodeAt(i);
-            if (c >= 0x80) throw "sig.charCodeAt(i) >= 0x80";
+            if (c >= 0x80) throw new Error("sig.charCodeAt(i) >= 0x80");
             newSig[i] = c;
         }
         let info = new HCAInfo(hca);
@@ -243,7 +243,7 @@ class HCA {
         if (!encrypt && !info.hasHeader["ciph"]) {
             return hca; // not encrypted
         } else if (encrypt && !info.hasHeader["ciph"]) {
-            throw "Input hca lacks \"ciph\" header section. Please call HCAInfo.addCipherHeader(hca) first.";
+            throw new Error("Input hca lacks \"ciph\" header section. Please call HCAInfo.addCipherHeader(hca) first.");
         }
         let cipher: HCACipher;
         switch (info.cipher) {
@@ -254,16 +254,16 @@ class HCA {
                 break;
             case 1:
                 // encrypted with "no key"
-                if (encrypt) throw "already encrypted with \"no key\", please decrypt first";
+                if (encrypt) throw new Error("already encrypted with \"no key\", please decrypt first");
                 else cipher = new HCACipher("none"); // ignore given keys
                 break;
             case 0x38:
                 // encrypted with keys - will yield incorrect waveform if incorrect keys are given!
-                if (encrypt) throw "already encrypted with specific keys, please decrypt with correct keys first";
+                if (encrypt) throw new Error("already encrypted with specific keys, please decrypt with correct keys first");
                 else cipher = new HCACipher(key1, key2);
                 break;
             default:
-                throw "unknown ciph.type";
+                throw new Error("unknown ciph.type");
         }
         for (let i = 0; i < info.format.blockCount; ++i) {
             // decrypt/encrypt block
@@ -371,7 +371,7 @@ class HCA {
         if (info.hasHeader["loop"] && loop) {
             // The file is marked as loop-able AND loop is ENABLED
             if (info.loop.start > info.loop.end || info.loop.start < 0 || info.loop.end >= info.format.blockCount)
-                throw "invalid loop start/end block index";
+                throw new Error("invalid loop start/end block index");
             // Calculate loop start/end in wav data part - just like above, not sure whether it's correct.
             loopStartOffsetInWavData = info.loop.start * blockSizeInWav;
             /* Haven't seen any evidence about what mute header/footer means, comment out for now.
@@ -455,7 +455,7 @@ class HCA {
         let seamBuff: Uint8Array | undefined;
         if (info.hasHeader["loop"] && loop) {
             // rewind the internal state
-            if (stateAtLoopEnd == null) throw "stateAtLoopEnd == null";
+            if (stateAtLoopEnd == null) throw new Error("stateAtLoopEnd == null");
             state = stateAtLoopEnd;
             // re-decode
             let startOffset = info.dataOffset + info.blockSize * info.loop.start;
@@ -478,7 +478,7 @@ class HCA {
             for (let i = 0; i < loop; i++) {
                 // copy the "seam"
                 let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, blockSizeInWav);
-                if (seamBuff == null) throw "seamBuff == null";
+                if (seamBuff == null) throw new Error("seamBuff == null");
                 dst.set(seamBuff);
                 // copy remaining part
                 dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav + blockSizeInWav, loopSizeInWav - blockSizeInWav);
@@ -534,7 +534,7 @@ class HCA {
             }
         } else {
             if (ftell == null) {
-                throw "ftell == null";
+                throw new Error("ftell == null");
             }
         }
         // write decoded data into writer
@@ -576,7 +576,7 @@ class HCA {
                             ftell += 4;
                             break;
                         default:
-                            throw "unknown mode";
+                            throw new Error("unknown mode");
                     }
                 }
             }
@@ -1153,7 +1153,7 @@ class HCACipher {
             let higher4 = key >> 4 & 0x0F;
             let lower4 = key & 0x0F;
             let flag = 0x01 << lower4;
-            if (bitMap[higher4] & flag) throw "_table is not bijective";
+            if (bitMap[higher4] & flag) throw new Error("_table is not bijective");
             // update table
             this._table[key] = val;
         }
@@ -1227,13 +1227,13 @@ class HCACipher {
                     return new DataView(key.buffer, key.byteOffset, key.byteLength).getUint32(0, true);
                 }
             default:
-                throw "can only accept number/hex string/Uint8Array[4]";
+                throw new Error("can only accept number/hex string/Uint8Array[4]");
         }
     }
     constructor (key1: any = undefined, key2: any = undefined) {
         this.dv1 = new DataView(this.key1buf);
         this.dv2 = new DataView(this.key2buf);
-        if (key1 == null) throw "no keys given. use \"defaultkey\" if you want to use the default key";
+        if (key1 == null) throw new Error("no keys given. use \"defaultkey\" if you want to use the default key");
         switch (key1) {
             case "none":
             case "nokey":
