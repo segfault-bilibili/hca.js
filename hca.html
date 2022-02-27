@@ -8,8 +8,10 @@
     key1=<input type="text" id="key1input" value="0x01395C51"><br>
     key2=<input type="text" id="key2input" value="0x00000000"><br>
     <i>Note: decryption process will be skipped if the HCA is not encrypted.</i><br>
-    <input type="file" id="hcainput" accept=".hca" onchange="handleFile(this.files)"><br>
-    Or <button id="downloadbtn" onclick="download()">download</button> from URL: <input type="text" id="urlinput" value="bgm01_anime02_hca.hca"><br>
+    Pick a local file:<br>
+    <input type="file" id="hcainput" accept=".hca" onchange="filePicked(this.files)"><br>
+    Or download from URL: <input type="text" id="urlinput" value="bgm01_anime02_hca.hca"><br>
+    <button id="downloadbtn" onclick="download()">download</button><br>
     <hr>
     <!--
     <h3>Streamed decoding & play (through <i>experimental</i> Media Source Extensions API)</h3>
@@ -22,89 +24,215 @@
     <h3>Decode the whole file</h3>
     (Extra) loop count: <input type="number" step="1" min="0" max="99" placeholder="0-99" id="loopcountinput" value="0"><br>
     <i>Note: loop count is ignored if HCA header doesn't have loop section</i><br>
-    <button disabled id="decodebtn" onclick="decodeWhole()">Decode</button><br>
+    <button disabled id="encryptbtn" onclick="encrypt()">Encrypt</button><br>
+    <button disabled id="decryptbtn" onclick="decrypt()">Decrypt</button><br>
+    <button disabled id="decodebtn" onclick="decode()">Decode</button><br>
     <audio id="whole_audio" controls></audio>
     <!-- <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.8.3/dist/ffmpeg.min.js"></script> -->
     <script src="hca.js"></script>
     <script>
-        var t = new Date().getTime();
-        function logTime(msg) {
-            if (msg == null) msg = "";
-            let c = new Date().getTime();
-            console.log(msg + " took " + (c - t) + " ms");
-            t = c;
-        }
+        var worker = null;
+        const hcaUrl = new URL("hca.js", document.baseURI);
 
-        var hcabuf = null;
+        var info = null;
 
-        var decodebtn = document.getElementById("decodebtn");
+        var hcaBytes = null;
+        var plainHcaBytes = null;
+        var cipherHcaBytes = null;
+        var wavBytes = null;
+
+        var wavURL = "";
+
         var downloadbtn = document.getElementById("downloadbtn");
 
-        function handleFile(files) {
-            hcabuf = null;
-            whole_audio.src = "";
-            if (files.length == 1) files[0].arrayBuffer().then((ab) => hcabuf = ab);
-            decodebtn.disabled = files.length != 1;
+        var encryptbtn = document.getElementById("encryptbtn");
+        var decryptbtn = document.getElementById("decryptbtn");
+        var decodebtn = document.getElementById("decodebtn");
+
+        function disableWholeFileBtns() {
+            for (let btn of [encryptbtn, decryptbtn, decodebtn]) {
+                btn.disabled = true;
+            }
+        }
+        disableWholeFileBtns(); // https://bugzilla.mozilla.org/show_bug.cgi?id=685657
+
+        function setAudioObjURL(url) {
+            if (wavURL != null && wavURL !== "") URL.revokeObjectURL(wavURL);
+            whole_audio.src = url;
         }
 
-        function download() {
-            downloadbtn.disabled = true;
-            downloadbtn.textContent = "downloading...";
-            hcabuf = null;
-            whole_audio.src = "";
-            decodebtn.disabled = true;
-            let url = document.getElementById("urlinput").value;
-            if (url !== "") fetch(url).then((res) => {
-                if (res.status == 200) {
-                    res.arrayBuffer().then((ab) => {
-                        hcabuf = ab;
-                        decodebtn.disabled = false;
-                        downloadbtn.textContent = "download (successful)";
-                        downloadbtn.disabled = false;
-                    });
-                } else throw "download failed, status " + res.status;
-            }).catch((e) => {
-                console.error(e);
-                downloadbtn.textContent = "download (failed)";
-                downloadbtn.disabled = false;
-            });
+        const fileNameMap = {
+            downloadbtn: "original.hca",
+            encryptbtn: "encrypted.hca",
+            decryptbtn: "decrypted.hca",
+            decodebtn: "decoded.wav",
         }
 
-        /*
-        var audioCtx = null;
-        function play() {
-            if (!audioCtx) {
-                let AudioContext = window.AudioContext;// || window.webkitAudioContext;
-                audioCtx = new AudioContext();
+        function setHCALinkObjURL(btnID, data) {
+            let fileName = fileNameMap[btnID];
+            let id = fileName.replaceAll(".", "_");
+
+            let el = document.getElementById(id);
+            if (el != null) {
+                URL.revokeObjectURL(el.getAttribute("href"));
+                el.nextSibling.remove();
+                el.remove();
             }
 
-            let key1 = document.getElementById("key1input").value;
-            let key2 = document.getElementById("key2input").value;
-            t = new Date().getTime();
-            let hca = new HCA(key1, key2);
-            logTime("new hca");
-            let loopFlag = document.getElementById("loopflaginput").checked;
-            hca.play(new Uint8Array(hcabuf), loopFlag, audioCtx);
-            console.log("Started playing");
-        }
-        */
+            if (data == null) return;
 
-        function decodeWhole() {
+            let btn = document.getElementById(btnID);
+            el = document.createElement("a");
+            el.setAttribute("id", id);
+            el.setAttribute("download", fileName);
+            let mimeType = fileName.match(/\.wav$/) ? 'audio/x-wav' : 'application/octet-stream';
+            el.setAttribute("href", URL.createObjectURL(new Blob([data], {type : mimeType})));
+            el.innerHTML = fileName;
+            let refNode = btn.nextSibling;
+            document.body.insertBefore(document.createElement("br"), refNode);
+            document.body.insertBefore(el, refNode);
+        }
+
+        async function handleFile(ab) {
+            hcaBytes = null;
+            setAudioObjURL("");
+            for (let btnID in fileNameMap) setHCALinkObjURL(btnID, null);
+            console.log("cleared existing data");
+            disableWholeFileBtns();
+            if (typeof ab === "object" && (ab instanceof ArrayBuffer || ab instanceof Uint8Array)) {
+                if (worker == null) {
+                    worker = new HCAWorker(hcaUrl);
+                }
+                let newHcaBytes = new Uint8Array(ab);
+                await worker.tick();
+                info = await worker.info(newHcaBytes);
+                await worker.tock("parsing HCA header");
+                hcaBytes = newHcaBytes;
+                setHCALinkObjURL("downloadbtn", hcaBytes);
+                let isEncrypted = info.hasHeader["ciph"] && info.cipher != 0;
+                encryptbtn.disabled = isEncrypted;
+                decryptbtn.disabled = !isEncrypted;
+                decodebtn.disabled = isEncrypted;
+            } else console.error("ab should be ArrayBuffer or Uint8Array");
+        }
+
+        async function filePicked(files) {
+            if (files.length == 1) {
+                await handleFile(await files[0].arrayBuffer());
+            } else handleFile(null);
+        }
+
+        async function download() {
+            downloadbtn.disabled = true;
+            downloadbtn.textContent = "downloading...";
+            disableWholeFileBtns();
+            let url = document.getElementById("urlinput").value;
+            if (url !== "") {
+                try {
+                    let response = await fetch(url);
+                    if (response.status == 200) {
+                        let ab = await response.arrayBuffer();
+                        downloadbtn.textContent = "download (successful, parsing HCA...)";
+                        downloadbtn.disabled = false;
+                        try {
+                            await handleFile(ab);
+                            downloadbtn.textContent = "download (successful, HCA parsed)";
+                        } catch (e) {
+                            console.error(e);
+                            downloadbtn.textContent = "download (successful, but failed to parse HCA)";
+                        }
+                    } else {
+                        console.error("download failed,", response);
+                        downloadbtn.textContent = `download (failed, ${response.status} ${response.statusText})`;
+                        downloadbtn.disabled = false;
+                    }
+                } catch (e) {
+                    console.error(e);
+                    downloadbtn.textContent = "download (network error)";
+                    downloadbtn.disabled = false;
+                }
+            }
+        }
+
+        async function encryptOrDecrypt(isEncrypting) {
+            let btnID = isEncrypting ? "encryptbtn" : "decryptbtn";
+            let btn = document.getElementById(btnID);
+            let oppositeBtn = isEncrypting ? decryptbtn : encryptbtn;
+
+            btn.disabled = true;
+            btn.textContent = isEncrypting ? "Encrypting..." : "Decrypting..."
+            oppositeBtn.disabled = true;
+            if (!isEncrypting) decodebtn.disabled = true;
+
             let key1 = document.getElementById("key1input").value;
             let key2 = document.getElementById("key2input").value;
+
+            let src = isEncrypting ? plainHcaBytes : cipherHcaBytes;
+            if (src == null) {
+                console.log(`has not yet ${isEncrypting ? "decrypted" : "encrypted"}, ${isEncrypting ? "encrypt" : "decrypt"} the original hca...`);
+                src = hcaBytes;
+            }
+            let dst = src.slice(0); // copy to new buffer
+
+            try {
+                await worker.tick();
+                // although decryption/encryption is done in-place,
+                // however since we are not using SharedArrayBuffer,
+                // the background worker is still actually overwritting a newly allocated buffer
+                dst = await worker[isEncrypting ? "encrypt" : "decrypt"](dst, key1, key2);
+                await worker.tock(isEncrypting ? "encryption" : "decryption");
+                if (isEncrypting) cipherHcaBytes = dst;
+                else plainHcaBytes = dst;
+                btn.textContent = (isEncrypting ? "Encryption" : "Decryption") + " done";
+                btn.disabled = false;
+                oppositeBtn.disabled = false;
+                if (!isEncrypting) decodebtn.disabled = false;
+                setHCALinkObjURL(btnID, dst);
+            } catch (e) {
+                console.error(e);
+                btn.textContent = "Error during " + (isEncrypting ? "encryption" : "decryption");
+                btn.disabled = true; // worker thread crashed, won't retry
+            }
+        }
+        async function encrypt() {
+            await encryptOrDecrypt(true);
+        }
+        async function decrypt() {
+            await encryptOrDecrypt(false);
+        }
+
+        async function decode() {
+            let btnID = "decodebtn";
+            let btn = document.getElementById(btnID);
+
+            btn.disabled = true;
+            btn.textContent = "Decoding...";
+
             let loop = parseInt(document.getElementById("loopcountinput").value);
             if (isNaN(loop) || loop < 0 || loop > 99) {
                 loop = 0;
                 document.getElementById("loopcountinput").value = 0;
             }
-            t = new Date().getTime();
-            let orig = new Uint8Array(hcabuf);
-            let decrypted = orig.slice(0);
-            HCA.decrypt(decrypted, "defaultkey"); // in-place decryption
-            logTime("decrypt");
-            const stream = HCA.decode(decrypted, 16, loop, 1.0);
-            logTime("decode");
-            whole_audio.src = URL.createObjectURL(new Blob([stream], {type : 'audio/x-wav'}));
+
+            try {
+                let src = plainHcaBytes;
+                if (src == null) {
+                    console.log(`has not yet decrypted, decode the original hca...`);
+                    src = hcaBytes;
+                }
+                await worker.tick();
+                wavBytes = await worker.decode(src, 16, loop, 1.0);
+                await worker.tock("decoding");
+                let url = URL.createObjectURL(new Blob([wavBytes], {type : 'audio/x-wav'}));
+                setAudioObjURL(url);
+                setHCALinkObjURL(btnID, wavBytes);
+                btn.textContent = "Decoding done";
+                btn.disabled = false;
+            } catch (e) {
+                console.error(e);
+                btn.textContent = "Error during decoding";
+                btn.disabled = true; // worker thread crashed, won't retry
+            }
         }
     </script>
 </body>

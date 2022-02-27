@@ -1319,3 +1319,157 @@ class HCAInternalState {
         }
     }
 }
+
+
+
+// Web Workers support
+if (typeof document === "undefined") {
+    // running in worker
+    onmessage = function (msg : MessageEvent) {
+        function handleMsg(msg : MessageEvent) {
+            switch (msg.data.cmd) {
+                case "nop":
+                    return;
+                case "info":
+                    try {
+                        return new HCAInfo(msg.data.args[0]);
+                    } catch (e) {
+                        if (!(e instanceof Error)) e = new Error("" + e);
+                        return e;
+                    }
+                case "decrypt":
+                    return HCA.decrypt.apply(HCA, msg.data.args);
+                case "encrypt":
+                    return HCA.encrypt.apply(HCA, msg.data.args);
+                case "addCipherHeader":
+                    return HCAInfo.addCipherHeader.apply(HCA, msg.data.args);
+                case "decode":
+                    return HCA.decode.apply(HCA, msg.data.args);
+                default:
+                    throw new Error("unknown cmd");
+            }
+        }
+        let reply: Record<string, any> = {taskID: msg.data.taskID};
+        try {
+            reply.result = handleMsg(msg);
+        } catch (e) {
+            reply.error = e;
+        }
+        this.postMessage(reply);
+    }
+}
+
+// create & control worker
+class HCAWorker {
+    private selfUrl: URL;
+    private cmdQueue: Array<{taskID: number, cmd: string, args: Array<any>}>;
+    private resultCallback: Record<number, {onResult: Function, onErr: Function}>;
+    private lastTaskID = 0;
+    private hcaWorker: Worker;
+    private errHandlerCallback: Function;
+    private idle = true;
+    private hasError = false;
+    private lastTick = 0;
+    private execCmdQueueIfIdle(): void {
+        if (this.hasError) throw new Error("there was once an error, which had terminated background HCAWorket thread");
+        if (this.idle) {
+            this.idle = false;
+            if (this.cmdQueue.length > 0) this.hcaWorker.postMessage(this.cmdQueue[0]);
+        }
+    }
+    private resultHandler(self: HCAWorker, msg: MessageEvent): void {
+        if (msg.data.error != null) {
+            this.errHandler(self, msg.data.error);
+            return;
+        }
+        let taskID = msg.data.taskID;
+        for (let i=0; i<self.cmdQueue.length; i++) {
+            if (self.cmdQueue[i].taskID == taskID) {
+                let nextTask = undefined;
+                if (i + 1 < self.cmdQueue.length) {
+                    nextTask = self.cmdQueue[i+1];
+                }
+                self.cmdQueue.splice(i, 1);
+                try {
+                    self.resultCallback[taskID].onResult(msg.data.result);
+                } catch (e) {
+                    this.errHandler(self, e); // before delete self.resultCallback[taskID];
+                    return;
+                }
+                delete self.resultCallback[taskID];
+                if (nextTask == undefined) {
+                    self.idle = true;
+                } else {
+                    self.hcaWorker.postMessage(nextTask);
+                }
+                return;
+            }
+        }
+        throw new Error("taskID not found in cmdQueue");
+    }
+    private errHandler(self: HCAWorker, err: any): void {
+        this.hasError = true;
+        try {
+            self.hcaWorker.terminate();
+        } catch (e) {console.error(e);}
+        try {
+            for (let taskID in this.resultCallback) try {
+                this.resultCallback[taskID].onErr(err);
+            } catch (e) {console.error(e);}
+        } catch (e) {console.error(e);}
+        try {
+            this.errHandlerCallback(err);
+        } catch (e) {console.error(e);}
+    }
+    sendCmdList(cmdlist: Array<{cmd: string, args: Array<any>, onResult: Function, onErr: Function}>): void {
+        for (let i=0; i<cmdlist.length; i++) {
+            let taskID = ++this.lastTaskID;
+            this.resultCallback[taskID] = {onResult: cmdlist[i].onResult, onErr: cmdlist[i].onErr};
+            this.cmdQueue.push({taskID: taskID, cmd: cmdlist[i].cmd, args: cmdlist[i].args});
+        }
+        this.execCmdQueueIfIdle();
+    }
+    sendCmd(cmd: string, args: Array<any>): Promise<any> {
+        return new Promise((resolve, reject) => this.sendCmdList([{cmd: cmd, args: args, onResult: resolve, onErr: reject}]));
+    }
+    async shutdown(): Promise<void> {
+        await this.sendCmd("nop", []);
+        this.hcaWorker.terminate();
+    }
+    async tick(): Promise<void> {
+        await this.sendCmd("nop", []);
+        this.lastTick = new Date().getTime();
+    }
+    async tock(text = ""): Promise<void> {
+        await this.sendCmd("nop", []);
+        console.log(`${text} took ${new Date().getTime() - this.lastTick} ms`);
+    }
+    constructor (selfUrl: URL, errHandlerCallback: Function | undefined) {
+        this.selfUrl = selfUrl;
+        this.cmdQueue = [];
+        this.resultCallback = {};
+        this.hcaWorker = new Worker(selfUrl);
+        this.errHandlerCallback = errHandlerCallback != null ? errHandlerCallback : () => {};
+        this.hcaWorker.onmessage = (msg) => this.resultHandler(this, msg);
+        this.hcaWorker.onerror = (msg) => this.errHandler(this, msg);
+        this.hcaWorker.onmessageerror = (msg) => this.errHandler(this, msg);
+    }
+    // commands
+    async info(hca: Uint8Array): Promise<HCAInfo> {
+        let info = await this.sendCmd("info", [hca]);
+        if (info instanceof Error) throw info; // avoid crashing the worker thread
+        else return info;
+    }
+    async decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Promise<Uint8Array> {
+        return await this.sendCmd("decrypt", [hca, key1, key2]);
+    }
+    async encrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Promise<Uint8Array> {
+        return await this.sendCmd("encrypt", [hca, key1, key2]);
+    }
+    async addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Promise<Uint8Array> {
+        return await this.sendCmd("addCipherHeader", [hca, cipherType]);
+    }
+    async decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0): Promise<Uint8Array> {
+        return await this.sendCmd("decode", [hca, mode, loop, volume]);
+    }
+}
