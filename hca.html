@@ -104,6 +104,9 @@
 
         async function handleFile(ab) {
             hcaBytes = null;
+            plainHcaBytes = null;
+            cipherHcaBytes = null;
+            wavBytes = null;
             setAudioObjURL("");
             for (let btnID in fileNameMap) setHCALinkObjURL(btnID, null);
             console.log("cleared existing data");
