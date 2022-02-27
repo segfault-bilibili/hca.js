@@ -178,15 +178,18 @@ class HCAInfo {
         this.rawHeader = this.parseHeader(hca, true, encrypt, modList);
     }
     static addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Uint8Array {
-        // sig must consist of 4 ASCII characters
-        if (sig.length != 4) throw new Error("sig.length != 4");
+        // sig must consist of 1-4 ASCII characters
+        if (sig.length < 1 || sig.length > 4) throw new Error("sig.length < 1 || sig.length > 4");
         let newSig = new Uint8Array(4);
         for (let i = 0; i < 4; i++) {
             let c = sig.charCodeAt(i);
             if (c >= 0x80) throw new Error("sig.charCodeAt(i) >= 0x80");
             newSig[i] = c;
         }
+        // parse header & check validty
         let info = new HCAInfo(hca);
+        // check whether specified header section already exists
+        if (info.hasHeader[sig]) throw new Error(`header section ${sig} already exists`);
         // prepare a newly allocated buffer
         let newHca = new Uint8Array(hca.byteLength + newSig.byteLength + newData.byteLength);
         let insertOffset = info.headerOffset["pad"][0];
