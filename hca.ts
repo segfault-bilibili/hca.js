@@ -118,7 +118,6 @@ class HCAInfo {
                     break;
                 case "ciph":
                     this.cipher = p.getUint16(ftell + 4);
-                    p.setUint16(ftell + 4, 0);
                     ftell += 6;
                     break;
                 case "rva":
