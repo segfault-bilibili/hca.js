@@ -116,9 +116,10 @@
                     worker = new HCAWorker(hcaUrl);
                 }
                 let newHcaBytes = new Uint8Array(ab);
-                await worker.tick();
-                info = await worker.info(newHcaBytes);
-                await worker.tock("parsing HCA header");
+                worker.tick();
+                let infoPromise = worker.info(newHcaBytes);
+                worker.tock("parsing HCA header");
+                info = await infoPromise;
                 hcaBytes = newHcaBytes;
                 setHCALinkObjURL("downloadbtn", hcaBytes);
                 let isEncrypted = info.hasHeader["ciph"] && info.cipher != 0;
@@ -195,12 +196,13 @@
             }
 
             try {
-                await worker.tick();
+                worker.tick();
                 // although decryption/encryption is done in-place,
                 // however since we are not using SharedArrayBuffer,
                 // the background worker is still actually overwritting a newly allocated buffer
-                dst = await worker[isEncrypting ? "encrypt" : "decrypt"](dst, key1, key2);
-                await worker.tock(isEncrypting ? "encryption" : "decryption");
+                let dstPromise = worker[isEncrypting ? "encrypt" : "decrypt"](dst, key1, key2);
+                worker.tock(isEncrypting ? "encryption" : "decryption");
+                dst = await dstPromise;
                 if (isEncrypting) cipherHcaBytes = dst;
                 else plainHcaBytes = dst;
                 btn.textContent = (isEncrypting ? "Encryption" : "Decryption") + " done";
@@ -246,9 +248,10 @@
                     console.log(`has not yet decrypted, decode the original hca...`);
                     src = hcaBytes;
                 }
-                await worker.tick();
-                wavBytes = await worker.decode(src, 16, loop, volume);
-                await worker.tock("decoding");
+                worker.tick();
+                let wavBytesPromise = worker.decode(src, 16, loop, volume);
+                worker.tock("decoding");
+                wavBytes = await wavBytesPromise;
                 let url = URL.createObjectURL(new Blob([wavBytes], {type : 'audio/x-wav'}));
                 setAudioObjURL(url);
                 setHCALinkObjURL(btnID, wavBytes);
