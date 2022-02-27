@@ -1342,7 +1342,7 @@ if (typeof document === "undefined") {
                 case "encrypt":
                     return HCA.encrypt.apply(HCA, msg.data.args);
                 case "addCipherHeader":
-                    return HCAInfo.addCipherHeader.apply(HCA, msg.data.args);
+                    return HCAInfo.addCipherHeader.apply(HCAInfo, msg.data.args);
                 case "decode":
                     return HCA.decode.apply(HCA, msg.data.args);
                 default:
