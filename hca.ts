@@ -43,6 +43,7 @@ class HCAInfo {
             if (writeInPlace) raw.setUint32(offset, encrypt ? magic | mask : magic, true);
         }
         let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
+        hex = hex.slice(0, strLen);
         return String.fromCharCode.apply(String, hex);
     }
     clone(): HCAInfo {
@@ -51,7 +52,7 @@ class HCAInfo {
     private parseHeader(hca: Uint8Array, writeInPlace: boolean, encrypt: boolean, modList: Record<string, Uint8Array>) {
         let p = new DataView(hca.buffer, hca.byteOffset, 8);
         let head = this.getSign(p, 0, writeInPlace, encrypt);
-        if (head !== "HCA\0") {
+        if (head !== "HCA") {
             throw new Error("Not a HCA file");
         }
         const version = {
@@ -69,13 +70,13 @@ class HCAInfo {
             // record hasHeader
             this.hasHeader[sign] = true;
             // padding should be the last one
-            if (sign == "pad\0") {
+            if (sign == "pad") {
                 this.headerOffset[sign] = [ftell, this.dataOffset - 2];
                 break;
             }
             // parse data accordingly
             switch (sign) {
-                case "fmt\0":
+                case "fmt":
                     this.format.channelCount = p.getUint8(ftell + 4);
                     this.format.samplingRate = p.getUint32(ftell + 4) & 0x00ffffff;
                     this.format.blockCount = p.getUint32(ftell + 8);
@@ -89,7 +90,7 @@ class HCAInfo {
                     this.compParam = hca.slice(ftell + 6, ftell + 6 + 9);
                     ftell += 16;
                     break;
-                case "dec\0":
+                case "dec":
                     this.blockSize = p.getUint16(ftell + 4);
                     this.bps = this.format.samplingRate * this.blockSize / 128000.0;
                     this.compParam[0] = p.getUint8(ftell + 6);
@@ -102,10 +103,10 @@ class HCAInfo {
                     this.compParam[7] = 0;
                     ftell += 13;
                     break;
-                case "vbr\0":
+                case "vbr":
                     ftell += 8;
                     break;
-                case "ath\0":
+                case "ath":
                     this.ath = p.getUint16(ftell + 4);
                     ftell += 6;
                     break;
@@ -120,7 +121,7 @@ class HCAInfo {
                     p.setUint16(ftell + 4, 0);
                     ftell += 6;
                     break;
-                case "rva\0":
+                case "rva":
                     this.rva = p.getFloat32(ftell + 4);
                     ftell += 8;
                     break;
@@ -189,7 +190,7 @@ class HCAInfo {
         let info = new HCAInfo(hca);
         // prepare a newly allocated buffer
         let newHca = new Uint8Array(hca.byteLength + newSig.byteLength + newData.byteLength);
-        let insertOffset = info.headerOffset["pad\0"][0];
+        let insertOffset = info.headerOffset["pad"][0];
         // copy existing headers (except padding)
         newHca.set(hca.subarray(0, insertOffset), 0);
         // copy inserted header
