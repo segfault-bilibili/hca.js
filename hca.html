@@ -24,6 +24,7 @@
     <h3>Decode the whole file</h3>
     (Extra) loop count: <input type="number" step="1" min="0" max="99" placeholder="0-99" id="loopcountinput" value="0"><br>
     <i>Note: loop count is ignored if HCA header doesn't have loop section</i><br>
+    Volume: <input type="number" step="1" min="0" max="100" placeholder="0-100" id="wholefilevolumeinput" value="100"><br>
     <button disabled id="encryptbtn" onclick="encrypt()">Encrypt</button><br>
     <button disabled id="decryptbtn" onclick="decrypt()">Decrypt</button><br>
     <button disabled id="decodebtn" onclick="decode()">Decode</button><br>
@@ -213,6 +214,12 @@
                 loop = 0;
                 document.getElementById("loopcountinput").value = 0;
             }
+            let volume = parseInt(document.getElementById("wholefilevolumeinput").value);
+            if (isNaN(volume) || volume < 0 || volume > 100) {
+                volume = 100;
+                document.getElementById("wholefilevolumeinput").value = 100;
+            }
+            volume /= 100;
 
             try {
                 let src = plainHcaBytes;
@@ -221,7 +228,7 @@
                     src = hcaBytes;
                 }
                 await worker.tick();
-                wavBytes = await worker.decode(src, 16, loop, 1.0);
+                wavBytes = await worker.decode(src, 16, loop, volume);
                 await worker.tock("decoding");
                 let url = URL.createObjectURL(new Blob([wavBytes], {type : 'audio/x-wav'}));
                 setAudioObjURL(url);
