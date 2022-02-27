@@ -1441,9 +1441,10 @@ class HCAWorker {
         await this.sendCmd("nop", []);
         this.lastTick = new Date().getTime();
     }
-    async tock(text = ""): Promise<void> {
-        await this.sendCmd("nop", []);
+    async tock(text = ""): Promise<number> {
+        let duration = await this.sendCmd("nop", []);
         console.log(`${text} took ${new Date().getTime() - this.lastTick} ms`);
+        return duration;
     }
     constructor (selfUrl: URL, errHandlerCallback: Function | undefined) {
         this.selfUrl = selfUrl;
