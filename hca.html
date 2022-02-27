@@ -186,7 +186,7 @@
             if (isEncrypting && !new HCAInfo(src).hasHeader["ciph"]) {
                 // check for ciph header section
                 console.log("input HCA lacks ciph header section, adding it");
-                dst = HCAInfo.addCipherHeader(src);
+                dst = await worker.addCipherHeader(src);
             } else {
                 dst = src.slice(0); // just copy to new buffer
             }
