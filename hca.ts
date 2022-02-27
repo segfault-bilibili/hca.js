@@ -1332,12 +1332,7 @@ if (typeof document === "undefined") {
                 case "nop":
                     return;
                 case "info":
-                    try {
-                        return new HCAInfo(msg.data.args[0]);
-                    } catch (e) {
-                        if (!(e instanceof Error)) e = new Error("" + e);
-                        return e;
-                    }
+                    return new HCAInfo(msg.data.args[0]);
                 case "decrypt":
                     return HCA.decrypt.apply(HCA, msg.data.args);
                 case "encrypt":
@@ -1350,13 +1345,30 @@ if (typeof document === "undefined") {
                     throw new Error("unknown cmd");
             }
         }
+        // it's observed that Firefox refuses to postMessage an Error object:
+        // "DataCloneError: The object could not be cloned."
+        // (observed in Firefox 97, not clear about other versions)
+        // Chrome doesn't seem to have this problem,
+        // however, in order to keep compatible with Firefox,
+        // we still have to avoid posting an Error object
         let reply: Record<string, any> = {taskID: msg.data.taskID};
         try {
             reply.result = handleMsg(msg);
         } catch (e) {
-            reply.error = e;
+            console.error(e);
+            reply.hasError = true;
+            reply.errMsg = "error during Worker executing cmd";
+            if (typeof e === "string" || e instanceof Error) reply.errMsg += "\n" + e.toString();
         }
-        this.postMessage(reply);
+        try {
+            this.postMessage(reply);
+        } catch (e) {
+            console.error(e);
+            reply.hasError = true;
+            reply.errMsg = (reply.errMsg == null ? "" : reply.errMsg + "\n\n") + "postMessage from Worker failed";
+            if (typeof e === "string" || e instanceof Error) reply.errMsg += "\n" + e.toString();
+            delete reply.result;
+        }
     }
 }
 
@@ -1370,20 +1382,19 @@ class HCAWorker {
     private errHandlerCallback: Function;
     private idle = true;
     private hasError = false;
+    private isShutdown = false;
     private lastTick = 0;
     private execCmdQueueIfIdle(): void {
-        if (this.hasError) throw new Error("there was once an error, which had terminated background HCAWorket thread");
+        if (this.hasError) throw new Error("there was once an error, which had shut down background HCAWorket thread");
+        if (this.isShutdown) throw new Error("the Worker instance has been shut down");
         if (this.idle) {
             this.idle = false;
             if (this.cmdQueue.length > 0) this.hcaWorker.postMessage(this.cmdQueue[0]);
         }
     }
     private resultHandler(self: HCAWorker, msg: MessageEvent): void {
-        if (msg.data.error != null) {
-            this.errHandler(self, msg.data.error);
-            return;
-        }
-        let taskID = msg.data.taskID;
+        let result = msg.data;
+        let taskID = result.taskID;
         for (let i=0; i<self.cmdQueue.length; i++) {
             if (self.cmdQueue[i].taskID == taskID) {
                 let nextTask = undefined;
@@ -1391,10 +1402,13 @@ class HCAWorker {
                     nextTask = self.cmdQueue[i+1];
                 }
                 self.cmdQueue.splice(i, 1);
+                let callback = self.resultCallback[taskID][result.hasError ? "onErr" : "onResult"];
                 try {
-                    self.resultCallback[taskID].onResult(msg.data.result);
+                    callback(result[result.hasError ? "errMsg" : "result"]);
                 } catch (e) {
-                    this.errHandler(self, e); // before delete self.resultCallback[taskID];
+                    let errMsg = "";
+                    if (typeof e === "string" || e instanceof Error) errMsg = e.toString();
+                    this.errHandler(self, errMsg); // before delete self.resultCallback[taskID];
                     return;
                 }
                 delete self.resultCallback[taskID];
@@ -1409,17 +1423,17 @@ class HCAWorker {
         throw new Error("taskID not found in cmdQueue");
     }
     private errHandler(self: HCAWorker, err: any): void {
-        this.hasError = true;
+        self.hasError = true;
         try {
             self.hcaWorker.terminate();
         } catch (e) {console.error(e);}
         try {
-            for (let taskID in this.resultCallback) try {
-                this.resultCallback[taskID].onErr(err);
+            for (let taskID in self.resultCallback) try {
+                self.resultCallback[taskID].onErr(err);
             } catch (e) {console.error(e);}
         } catch (e) {console.error(e);}
         try {
-            this.errHandlerCallback(err);
+            self.errHandlerCallback(err);
         } catch (e) {console.error(e);}
     }
     sendCmdList(cmdlist: Array<{cmd: string, args: Array<any>, onResult: Function, onErr: Function}>): void {
@@ -1436,6 +1450,7 @@ class HCAWorker {
     async shutdown(): Promise<void> {
         await this.sendCmd("nop", []);
         this.hcaWorker.terminate();
+        this.isShutdown = true;
     }
     async tick(): Promise<void> {
         await this.sendCmd("nop", []);
@@ -1458,15 +1473,16 @@ class HCAWorker {
     }
     // commands
     async info(hca: Uint8Array): Promise<HCAInfo> {
-        let info = await this.sendCmd("info", [hca]);
-        if (info instanceof Error) throw info; // avoid crashing the worker thread
-        else return info;
+        return await this.sendCmd("info", [hca]);
     }
     async decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Promise<Uint8Array> {
         return await this.sendCmd("decrypt", [hca, key1, key2]);
     }
     async encrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Promise<Uint8Array> {
         return await this.sendCmd("encrypt", [hca, key1, key2]);
+    }
+    async addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Promise<Uint8Array> {
+        return await this.sendCmd("addHeader", [hca, sig, newData]);
     }
     async addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Promise<Uint8Array> {
         return await this.sendCmd("addCipherHeader", [hca, cipherType]);
