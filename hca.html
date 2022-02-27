@@ -50,9 +50,17 @@
         var decryptbtn = document.getElementById("decryptbtn");
         var decodebtn = document.getElementById("decodebtn");
 
+        const initialBtnText = {
+            encryptbtn: "encrypt",
+            decryptbtn: "decrypt",
+            decodebtn: "decode",
+        }
+
         function disableWholeFileBtns() {
-            for (let btn of [encryptbtn, decryptbtn, decodebtn]) {
+            for (let btnID in initialBtnText) {
+                let btn = document.getElementById(btnID);
                 btn.disabled = true;
+                btn.textContent = initialBtnText[btnID];
             }
         }
         disableWholeFileBtns(); // https://bugzilla.mozilla.org/show_bug.cgi?id=685657
