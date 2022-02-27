@@ -293,6 +293,7 @@ class HCA {
         else if (volume < 0) volume = 0;
         let state = new HCAInternalState(hca); // throws "Not a HCA file" if mismatch
         let info = state.info;
+        if (info.hasHeader["ciph"] && info.cipher != 0) throw new Error("HCA is encrypted, please decrypt it first before decoding");
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
