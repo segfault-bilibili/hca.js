@@ -28,7 +28,7 @@ class HCAInfo {
     cipher = 0;
     rva = 0.0;
     comment = "";
-    private getSign(raw: DataView, offset = 0, writeInPlace: boolean, encrypt: boolean) {
+    private getSign(raw: DataView, offset = 0, changeMask: boolean, encrypt: boolean) {
         let magic = raw.getUint32(offset, true);
         let strLen = 4;
         for (let i = 0; i < 4; i++) {
@@ -40,7 +40,7 @@ class HCAInfo {
         if (strLen > 0) {
             let mask = 0x80808080 >>> 8 * (4 - strLen);
             magic &= 0x7f7f7f7f;
-            if (writeInPlace) raw.setUint32(offset, encrypt ? magic | mask : magic, true);
+            if (changeMask) raw.setUint32(offset, encrypt ? magic | mask : magic, true);
         }
         let hex = [magic & 0xff, magic >> 8 & 0xff, magic >> 16 & 0xff, magic >> 24 & 0xff];
         hex = hex.slice(0, strLen);
@@ -49,9 +49,9 @@ class HCAInfo {
     clone(): HCAInfo {
         return new HCAInfo(this.rawHeader);
     }
-    private parseHeader(hca: Uint8Array, writeInPlace: boolean, encrypt: boolean, modList: Record<string, Uint8Array>) {
+    private parseHeader(hca: Uint8Array, changeMask: boolean, encrypt: boolean, modList: Record<string, Uint8Array>) {
         let p = new DataView(hca.buffer, hca.byteOffset, 8);
-        let head = this.getSign(p, 0, writeInPlace, encrypt);
+        let head = this.getSign(p, 0, changeMask, encrypt);
         if (head !== "HCA") {
             throw new Error("Not a HCA file");
         }
@@ -66,7 +66,7 @@ class HCAInfo {
         while (ftell < this.dataOffset - 2) {
             let lastFtell = ftell;
             // get the sig
-            let sign = this.getSign(p, ftell, writeInPlace, encrypt);
+            let sign = this.getSign(p, ftell, changeMask, encrypt);
             // record hasHeader
             this.hasHeader[sign] = true;
             // padding should be the last one
@@ -146,7 +146,7 @@ class HCAInfo {
         let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
         let _b = this.compParam[7];
         this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
-        if (writeInPlace) {
+        if (changeMask) {
             // recalculate checksum
             let newCrc16 = HCACrc16.calc(hca, this.dataOffset - 2);
             p.setUint16(this.dataOffset - 2, newCrc16);
@@ -212,9 +212,9 @@ class HCAInfo {
         if (cipherType != null) new DataView(newData.buffer).setUint16(0, cipherType);
         return this.addHeader(hca, "ciph", newData);
     }
-    constructor (hca: Uint8Array, writeInPlace: boolean = false, encrypt: boolean = false) {
-        // if writeInPlace == true, (un)mask the header sigs in-place
-        this.rawHeader = this.parseHeader(hca, writeInPlace, encrypt, {});
+    constructor (hca: Uint8Array, changeMask: boolean = false, encrypt: boolean = false) {
+        // if changeMask == true, (un)mask the header sigs in-place
+        this.rawHeader = this.parseHeader(hca, changeMask, encrypt, {});
     }
 }
 
