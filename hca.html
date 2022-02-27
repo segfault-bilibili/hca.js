@@ -208,7 +208,7 @@
             } catch (e) {
                 console.error(e);
                 btn.textContent = "Error during " + (isEncrypting ? "encryption" : "decryption");
-                btn.disabled = true; // worker thread crashed, won't retry
+                btn.disabled = false;
             }
         }
         async function encrypt() {
@@ -254,7 +254,7 @@
             } catch (e) {
                 console.error(e);
                 btn.textContent = "Error during decoding";
-                btn.disabled = true; // worker thread crashed, won't retry
+                btn.disabled = false;
             }
         }
     </script>
