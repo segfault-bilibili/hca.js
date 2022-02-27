@@ -51,7 +51,7 @@ class HCAInfo {
     }
     private parseHeader(hca: Uint8Array, changeMask: boolean, encrypt: boolean, modList: Record<string, Uint8Array>) {
         let p = new DataView(hca.buffer, hca.byteOffset, 8);
-        let head = this.getSign(p, 0, changeMask, encrypt);
+        let head = this.getSign(p, 0, false, encrypt); // do not overwrite for now, until checksum verified
         if (head !== "HCA") {
             throw new Error("Not a HCA file");
         }
@@ -61,6 +61,12 @@ class HCAInfo {
         }
         this.version = version.main + '.' + version.sub;
         this.dataOffset = p.getUint16(6);
+        // verify checksum
+        HCACrc16.verify(hca, this.dataOffset - 2);
+        let hasModDone = false;
+        // checksum verified, now we can overwrite it
+        if (changeMask) this.getSign(p, 0, changeMask, encrypt);
+        // parse the header
         p = new DataView(hca.buffer, hca.byteOffset, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
@@ -139,19 +145,34 @@ class HCAInfo {
             if (newData != null) {
                 if (newData.byteLength > sectionDataLen) throw new Error("newData.byteLength > sectionDataLen");
                 hca.set(newData, lastFtell + 4);
+                hasModDone = true;
             }
         }
         this.compParam[2] = this.compParam[2] || 1;
         let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
         let _b = this.compParam[7];
         this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
-        if (changeMask) {
-            // recalculate checksum
-            let newCrc16 = HCACrc16.calc(hca, this.dataOffset - 2);
-            p.setUint16(this.dataOffset - 2, newCrc16);
+        if (changeMask || hasModDone) {
+            // fix checksum
+            HCACrc16.fix(hca, this.dataOffset - 2);
         }
         let rawHeader = hca.slice(0, this.dataOffset);
+        // check validity of parsed values
+        this.checkValidity();
         return rawHeader;
+    }
+    private checkValidity(): void {
+        const results: Array<boolean> = [
+            this.blockSize > 0,
+            0 <= this.loop.start,
+            this.loop.start < this.loop.end,
+            this.loop.end <= this.format.blockCount,
+        ];
+        results.find((result, index) => {
+            if (!result) {
+                throw new Error(`did not pass check on rule ${index}`);
+            }
+        });
     }
     private isHeaderChanged(hca: Uint8Array): boolean {
         if (hca.length >= this.rawHeader.length) {
@@ -168,13 +189,14 @@ class HCAInfo {
         if (this.isHeaderChanged(hca)) {
             this.parseHeader(hca, false, false, {});
         }
-        // modify data in-place
+        // prepare to modify data in-place
         let modList: Record<string, Uint8Array> = {};
         modList[sig] = newData;
         let encrypt = this.cipher != 0;
         if (sig === "ciph") {
             encrypt = new DataView(newData.buffer, newData.byteOffset, newData.byteLength).getUint16(0) != 0;
         }
+        // do actual modification & check validity
         this.rawHeader = this.parseHeader(hca, true, encrypt, modList);
     }
     static addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Uint8Array {
@@ -204,9 +226,10 @@ class HCAInfo {
         info.dataOffset += newSig.byteLength + newData.byteLength;
         let p = new DataView(newHca.buffer, newHca.byteOffset, newHca.byteLength);
         p.setInt16(6, info.dataOffset);
-        // recalculate checksum
-        let newCrc16 = HCACrc16.calc(newHca, info.dataOffset - 2);
-        p.setUint16(info.dataOffset - 2, newCrc16);
+        // fix checksum
+        HCACrc16.fix(newHca, info.dataOffset - 2);
+        // reparse header & recheck validty
+        info = new HCAInfo(newHca);
         return newHca;
     }
     static addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Uint8Array {
@@ -269,13 +292,14 @@ class HCA {
                 throw new Error("unknown ciph.type");
         }
         for (let i = 0; i < info.format.blockCount; ++i) {
-            // decrypt/encrypt block
             let ftell = info.dataOffset + info.blockSize * i;
-            cipher.mask(hca, ftell, info.blockSize - 2);
-            // recalculate checksum
-            let p = new DataView(hca.buffer, ftell + info.blockSize - 2, 2);
-            let newCrc16 = HCACrc16.calc(hca.subarray(ftell, ftell + info.blockSize - 2), info.blockSize - 2);
-            p.setUint16(0, newCrc16);
+            let block = hca.subarray(ftell, ftell + info.blockSize);
+            // verify block checksum
+            HCACrc16.verify(block, info.blockSize - 2);
+            // decrypt/encrypt block
+            cipher.mask(block, 0, info.blockSize - 2);
+            // fix checksum
+            HCACrc16.fix(block, info.blockSize - 2);
         }
         // re-(un)mask headers, and set ciph header to new value
         let newCipherData = new Uint8Array(2);
@@ -502,6 +526,10 @@ class HCA {
                 mode = 32;
         }
         let info = state.info;
+        if (block.byteLength < info.blockSize) throw new Error("block.byteLength < info.blockSize");
+        // verify checksum
+        HCACrc16.verify(block, info.blockSize - 2);
+        // decode
         let channel = state.channel;
         let data = new HCABitReader(info.blockSize, block);
         let magic = data.read(16);
@@ -1072,11 +1100,35 @@ class HCACrc16 {
         0x0220,0x8225,0x822F,0x022A,0x823B,0x023E,0x0234,0x8231,0x8213,0x0216,0x021C,0x8219,0x0208,0x820D,0x8207,0x0202
     ]);
     static calc(data: Uint8Array, size: number): number {
+        if (size > data.byteLength) throw new Error("size > data.byteLength");
+        if (size < 0) throw new Error("size < 0");
         let sum = 0;
-        let i = 0;
-        while (i < size)
-            sum = ((sum << 8) ^ this._v[(sum >> 8) ^ data[i++]]) & 0x0000ffff;
+        for (let i = 0; i < size; i++)
+            sum = ((sum << 8) ^ this._v[(sum >> 8) ^ data[i]]) & 0x0000ffff;
         return sum & 0x0000ffff;
+    }
+    static verify(data: Uint8Array, size: number, expected: number | undefined = undefined, doNotThrow = false): boolean {
+        if (expected == null) {
+            expected = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(size);
+        }
+        let actual = this.calc(data, size);
+        let result = expected == actual;
+        if (!result) {
+            function toHex(num: number): string {
+                const padding = "0000";
+                let hex = padding + num.toString(padding.length * 4).toUpperCase();
+                return hex.substring(hex.length - padding.length, hex.length)
+            }
+            let msg = `checksum mismatch (expected=${toHex(expected)} actual=${toHex(actual)})`;
+            if (doNotThrow) console.error(msg);
+            else throw new Error(msg);
+        }
+        return result;
+    }
+    static fix(data: Uint8Array, size: number): Uint8Array {
+        let newCrc16 = this.calc(data, size);
+        new DataView(data.buffer, data.byteOffset, data.byteLength).setUint16(size, newCrc16);
+        return data;
     }
 }
 
