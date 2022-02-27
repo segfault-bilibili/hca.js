@@ -150,6 +150,18 @@ let hasCiphHeader = hcaInfoInstance.hasHeader["ciph"];
 
 **Web Worker APIs are generally recommended because they do the computational job in a background [Worker](https://developer.mozilla.org/en-US/docs/Web/API/Worker) thread, which won't block the foreground main thread.**
 
+For example, you may decrypt & decode a HCA (as `Uint8Array`) like:
+
+```JavaScript
+async function decryptAndDecode(hca) {
+    const hcaUrl = new URL("hca.js", document.baseURI);
+    let worker = new HCAWorker(hcaUrl);
+    let decrypted = await worker.decrypt(hca.slice(0), "defaultkey");
+    let wav = await worker.decode(decrypted, 16);
+    return wav;
+}
+```
+
 ### `new HCAWorker(selfUrl: URL, errHandlerCallback: Function | undefined)`
 
  - Return a new `HCAWorker` instance (referred as `hcaWorkerInstance` below), which is generally used in **main thread** to **controls** a `Worker` running `hca.js`, so that computational jobs can be done in background without blocking the foreground main thread.
@@ -158,23 +170,23 @@ let hasCiphHeader = hcaInfoInstance.hasHeader["ciph"];
 
  - `errHandlerCallback` is optional, which will be called if the HCA `Worker` **is irrecoverably crashing** on error.
 
-### `await hcaWorkerInstance.info(hca: Uint8Array): HCAInfo`
+### `async hcaWorkerInstance.info(hca: Uint8Array): HCAInfo`
 
  - Similar to the [new HCAInfo](#new-hcainfohca-uint8array-changemask-boolean--false-encrypt-boolean--false) raw API described above.
 
-### `await hcaWorkerInstance.addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Uint8Array`
-### `await hcaWorkerInstance.addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Uint8Array`
+### `async hcaWorkerInstance.addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Uint8Array`
+### `async hcaWorkerInstance.addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Uint8Array`
 
  - Similar to the [HCAInfo.addCipherHeader](#hcainfoaddcipherheaderhca-uint8array-ciphertype-number--undefined--undefined-uint8array)/[HCAInfo.addHeader](#hcainfoaddheaderhca-uint8array-sig-string-newdata-uint8array-uint8array) raw APIs described above.
 
-### `await hcaWorkerInstance.decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array`
-### `await hcaWorkerInstance.encrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array`
-### `await hcaWorkerInstance.decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0): Uint8Array`
+### `async hcaWorkerInstance.decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array`
+### `async hcaWorkerInstance.encrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array`
+### `async hcaWorkerInstance.decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0): Uint8Array`
 
  - Similar to the [HCA.decrypt](#hcadecrypthca-uint8array-key1-any--undefined-key2-any--undefined-uint8array)/[HCA.encrypt](#hcaencrypthca-uint8array-key1-any--undefined-key2-any--undefined-uint8array)/[HCA.decode](#hcadecodehca-uint8array-mode--32-loop--0-volume--10-uint8array) raw API described above.
 
-### `await hcaWorkerInstance.tick(): void`
-### `await hcaWorkerInstance.tock(text = ""): int`
+### `async hcaWorkerInstance.tick(): void`
+### `async hcaWorkerInstance.tock(text = ""): int`
 
  - Measure how long a command being executed by the `Worker` controlled by `hcaWorkerInstance` takes.
 
@@ -184,7 +196,24 @@ let hasCiphHeader = hcaInfoInstance.hasHeader["ciph"];
 
  - `text` is optional, which will be included in console output.
 
-### `await hcaWorkerInstance.shutdown(): void`
+ - **Watch out for the characteristics of async calls.** `tick()`/`tock()` should be used like:
+
+   ```JavaScript
+   hcaWorkerInstance.tick();
+   let wavPromise = hcaWorkerInstance.decode(hca, "defaultkey");
+   hcaWorkerInstance.tock();
+   let wav = await wavPromise;
+   ```
+
+   The following incorrect usage may result in incorrect `tock()` measuring results, because `tock()` command won't be sent to the `Worker` until `decode()` returns, in the meantime another `tick()` call may change the last tick time:
+
+   ```JavaScript
+   await hcaWorkerInstance.tick();
+   let wav = await hcaWorkerInstance.decode(hca, "defaultkey");
+   await hcaWorkerInstance.tock();
+   ```
+
+### `async hcaWorkerInstance.shutdown(): void`
 
  - Gracefully shut down the `Worker` controlled by `hcaWorkerInstance`.
 
