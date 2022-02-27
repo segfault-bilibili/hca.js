@@ -173,7 +173,15 @@
                 console.log(`has not yet ${isEncrypting ? "decrypted" : "encrypted"}, ${isEncrypting ? "encrypt" : "decrypt"} the original hca...`);
                 src = hcaBytes;
             }
-            let dst = src.slice(0); // copy to new buffer
+            let dst = null;
+
+            if (isEncrypting && !new HCAInfo(src).hasHeader["ciph"]) {
+                // check for ciph header section
+                console.log("input HCA lacks ciph header section, adding it");
+                dst = HCAInfo.addCipherHeader(src);
+            } else {
+                dst = src.slice(0); // just copy to new buffer
+            }
 
             try {
                 await worker.tick();
