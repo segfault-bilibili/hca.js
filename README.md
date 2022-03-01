@@ -95,6 +95,12 @@ Return decoded (Windows PCM) WAV of the input whole HCA file. **The input HCA mu
 
  - **Checksums will be verified in the process, and `Error` will be thrown on any mismatch.**
 
+### `HCA.fixChecksum(hca: Uint8Array): Uint8Array`
+
+ - Set checksums of HCA header and all blocks to recalculated actual value, **in-place**. Pass in something like `hca.slice(0)` if you don't want the input HCA to be overwritten.
+ 
+ - Return the modifed HCA.
+
 ### `HCAInfo.addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Uint8Array`
 
  - Return a new HCA **in a newly allocated buffer** which is the input HCA with a newly added `ciph` header section.
@@ -108,6 +114,12 @@ Return decoded (Windows PCM) WAV of the input whole HCA file. **The input HCA mu
  - Return a new HCA **in a newly allocated buffer**, which is the input HCA with newly added header section. The newly added header section has specified `sig` and `newData`.
 
  - Just like above, **Throw `Error` if an existing header section is already present.** Please check it with `new HCAInfo(hca).hasHeader[SIG]` first.
+
+### `HCAInfo.fixHeaderChecksum(hca: Uint8Array): Uint8Array`
+
+ - Set the checksum of HCA **header** to recalculated actual value, **in-place**. Pass in something like `hca.slice(0)` if you don't want the input HCA to be overwritten.
+
+ - Return the modifed HCA.
 
 ## Non-static raw APIs
 
@@ -174,6 +186,11 @@ async function decryptAndDecode(hca) {
 
  - Similar to the [new HCAInfo](#new-hcainfohca-uint8array-changemask-boolean--false-encrypt-boolean--false) raw API described above.
 
+### `async hcaWorkerInstance.fixHeaderChecksum(hca: Uint8Array): Uint8Array`
+### `async hcaWorkerInstance.fixChecksum(hca: Uint8Array): Uint8Array`
+
+ - Similar to the [HCAInfo.fixHeaderChecksum](#hcainfofixheaderchecksumhca-uint8array-uint8array)/[HCA.fixChecksum](#hcafixchecksumhca-uint8array-uint8array) raw APIs described above.
+
 ### `async hcaWorkerInstance.addCipherHeader(hca: Uint8Array, cipherType: number | undefined = undefined): Uint8Array`
 ### `async hcaWorkerInstance.addHeader(hca: Uint8Array, sig: string, newData: Uint8Array): Uint8Array`
 
@@ -183,7 +200,7 @@ async function decryptAndDecode(hca) {
 ### `async hcaWorkerInstance.encrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Uint8Array`
 ### `async hcaWorkerInstance.decode(hca: Uint8Array, mode = 32, loop = 0, volume = 1.0): Uint8Array`
 
- - Similar to the [HCA.decrypt](#hcadecrypthca-uint8array-key1-any--undefined-key2-any--undefined-uint8array)/[HCA.encrypt](#hcaencrypthca-uint8array-key1-any--undefined-key2-any--undefined-uint8array)/[HCA.decode](#hcadecodehca-uint8array-mode--32-loop--0-volume--10-uint8array) raw API described above.
+ - Similar to the [HCA.decrypt](#hcadecrypthca-uint8array-key1-any--undefined-key2-any--undefined-uint8array)/[HCA.encrypt](#hcaencrypthca-uint8array-key1-any--undefined-key2-any--undefined-uint8array)/[HCA.decode](#hcadecodehca-uint8array-mode--32-loop--0-volume--10-uint8array) raw APIs described above.
 
 ### `async hcaWorkerInstance.tick(): void`
 ### `async hcaWorkerInstance.tock(text = ""): int`
