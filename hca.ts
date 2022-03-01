@@ -28,7 +28,7 @@ class HCAInfo {
     cipher = 0;
     rva = 0.0;
     comment = "";
-    private getSign(raw: DataView, offset = 0, changeMask: boolean, encrypt: boolean) {
+    private static getSign(raw: DataView, offset = 0, changeMask: boolean, encrypt: boolean) {
         let magic = raw.getUint32(offset, true);
         let strLen = 4;
         for (let i = 0; i < 4; i++) {
@@ -51,7 +51,7 @@ class HCAInfo {
     }
     private parseHeader(hca: Uint8Array, changeMask: boolean, encrypt: boolean, modList: Record<string, Uint8Array>) {
         let p = new DataView(hca.buffer, hca.byteOffset, 8);
-        let head = this.getSign(p, 0, false, encrypt); // do not overwrite for now, until checksum verified
+        let head = HCAInfo.getSign(p, 0, false, encrypt); // do not overwrite for now, until checksum verified
         if (head !== "HCA") {
             throw new Error("Not a HCA file");
         }
@@ -65,14 +65,14 @@ class HCAInfo {
         HCACrc16.verify(hca, this.dataOffset - 2);
         let hasModDone = false;
         // checksum verified, now we can overwrite it
-        if (changeMask) this.getSign(p, 0, changeMask, encrypt);
+        if (changeMask) HCAInfo.getSign(p, 0, changeMask, encrypt);
         // parse the header
         p = new DataView(hca.buffer, hca.byteOffset, this.dataOffset);
         let ftell = 8;
         while (ftell < this.dataOffset - 2) {
             let lastFtell = ftell;
             // get the sig
-            let sign = this.getSign(p, ftell, changeMask, encrypt);
+            let sign = HCAInfo.getSign(p, ftell, changeMask, encrypt);
             // record hasHeader
             this.hasHeader[sign] = true;
             // padding should be the last one
@@ -236,6 +236,16 @@ class HCAInfo {
         let newData = new Uint8Array(2);
         if (cipherType != null) new DataView(newData.buffer).setUint16(0, cipherType);
         return this.addHeader(hca, "ciph", newData);
+    }
+    static fixHeaderChecksum(hca: Uint8Array): Uint8Array {
+        let p = new DataView(hca.buffer, hca.byteOffset, 8);
+        let head = this.getSign(p, 0, false, false);
+        if (head !== "HCA") {
+            throw new Error("Not a HCA file");
+        }
+        let dataOffset = p.getUint16(6);
+        HCACrc16.fix(hca, dataOffset - 2);
+        return hca;
     }
     constructor (hca: Uint8Array, changeMask: boolean = false, encrypt: boolean = false) {
         // if changeMask == true, (un)mask the header sigs in-place
@@ -614,6 +624,17 @@ class HCA {
             }
         }
         return new Uint8Array(writer.buffer, ftellBegin, ftell - ftellBegin);
+    }
+
+    static fixChecksum(hca: Uint8Array): Uint8Array {
+        HCAInfo.fixHeaderChecksum(hca);
+        let info = new HCAInfo(hca);
+        for (let i = 0; i < info.format.blockCount; i++) {
+            let ftell = info.dataOffset + i * info.blockSize;
+            let block = hca.subarray(ftell, ftell + info.blockSize);
+            HCACrc16.fix(block, info.blockSize - 2);
+        }
+        return hca;
     }
 }
 
@@ -1387,6 +1408,10 @@ if (typeof document === "undefined") {
                     return;
                 case "info":
                     return new HCAInfo(msg.data.args[0]);
+                case "fixHeaderChecksum":
+                    return HCAInfo.fixHeaderChecksum.apply(HCA, msg.data.args);
+                case "fixChecksum":
+                    return HCA.fixChecksum.apply(HCA, msg.data.args);
                 case "decrypt":
                     return HCA.decrypt.apply(HCA, msg.data.args);
                 case "encrypt":
@@ -1528,6 +1553,12 @@ class HCAWorker {
     // commands
     async info(hca: Uint8Array): Promise<HCAInfo> {
         return await this.sendCmd("info", [hca]);
+    }
+    async fixHeaderChecksum(hca: Uint8Array): Promise<Uint8Array> {
+        return await this.sendCmd("fixHeaderChecksum", [hca]);
+    }
+    async fixChecksum(hca: Uint8Array): Promise<Uint8Array> {
+        return await this.sendCmd("fixChecksum", [hca]);
     }
     async decrypt(hca: Uint8Array, key1: any = undefined, key2: any = undefined): Promise<Uint8Array> {
         return await this.sendCmd("decrypt", [hca, key1, key2]);
