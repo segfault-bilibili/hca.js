@@ -19,9 +19,12 @@ Decrypt & decode hca(2.0) file in browser.
 - [ ] recode (ogg/aac/mp3/flac)
 - [ ] FFT/DCT/DCTM/IDCTM (?)
 
-# Example
+# Demo
 
-see [hca.html](/hca.html)
+[hca.html](/hca.html)
+
+Standalone version (can be saved for offline use): [hca-standalone.html](/hca-standalone.html)
+
 # Raw APIs
 
 **Generally not recommended:** when called in the foreground main thread, raw APIs block the main thread for significant time (1000-1200ms for an 1.3MB HCA file being decrypted and decoded)
