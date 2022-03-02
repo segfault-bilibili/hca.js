@@ -23,7 +23,8 @@ class HCAInfo {
     loop = {
         start: 0,
         end: 0,
-        count: 0
+        count: 0,
+        r01: 0,
     }
     cipher = 0;
     rva = 0.0;
@@ -120,6 +121,7 @@ class HCAInfo {
                     this.loop.start = p.getUint32(ftell + 4);
                     this.loop.end = p.getUint32(ftell + 8);
                     this.loop.count = p.getUint16(ftell + 12);
+                    this.loop.r01 = p.getUint16(ftell + 14);
                     ftell += 16;
                     break;
                 case "ciph":
