@@ -1140,7 +1140,7 @@ class HCACrc16 {
             function toHex(num: number): string {
                 const padding = "0000";
                 let hex = padding + num.toString(padding.length * 4).toUpperCase();
-                return hex.substring(hex.length - padding.length, hex.length)
+                return "0x" + hex.substring(hex.length - padding.length, hex.length)
             }
             let msg = `checksum mismatch (expected=${toHex(expected)} actual=${toHex(actual)})`;
             if (doNotThrow) console.error(msg);
