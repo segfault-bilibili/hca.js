@@ -11,8 +11,8 @@ class HCAInfo {
         channelCount: 0,
         samplingRate: 0,
         blockCount: 0,
-        muteHeader: 0,
-        muteFooter: 0
+        droppedHeader: 0,
+        droppedFooter: 0
     }
     blockSize = 0;
     hasHeader: Record<string, boolean> = {};
@@ -23,12 +23,20 @@ class HCAInfo {
     loop = {
         start: 0,
         end: 0,
-        count: 0,
-        r01: 0,
+        // count: 0, // Nyagamon's interpretation
+        // r01: 0,
+        droppedHeader: 0, // VGAudio's interpretation
+        droppedFooter: 0,
     }
     cipher = 0;
     rva = 0.0;
     comment = "";
+    // computed sample count/offsets
+    fullSampleCount = 0;
+    startAtSample = 0;
+    endAtSample = 0;
+    loopStartAtSample = 0;
+    loopEndAtSample = 0;
     private static getSign(raw: DataView, offset = 0, changeMask: boolean, encrypt: boolean) {
         let magic = raw.getUint32(offset, true);
         let strLen = 4;
@@ -87,8 +95,8 @@ class HCAInfo {
                     this.format.channelCount = p.getUint8(ftell + 4);
                     this.format.samplingRate = p.getUint32(ftell + 4) & 0x00ffffff;
                     this.format.blockCount = p.getUint32(ftell + 8);
-                    this.format.muteHeader = p.getUint16(ftell + 12);
-                    this.format.muteFooter = p.getUint16(ftell + 14);
+                    this.format.droppedHeader = p.getUint16(ftell + 12);
+                    this.format.droppedFooter = p.getUint16(ftell + 14);
                     ftell += 16;
                     break;
                 case "comp":
@@ -120,8 +128,8 @@ class HCAInfo {
                 case "loop":
                     this.loop.start = p.getUint32(ftell + 4);
                     this.loop.end = p.getUint32(ftell + 8);
-                    this.loop.count = p.getUint16(ftell + 12);
-                    this.loop.r01 = p.getUint16(ftell + 14);
+                    this.loop.droppedHeader = p.getUint16(ftell + 12);
+                    this.loop.droppedFooter = p.getUint16(ftell + 14);
                     ftell += 16;
                     break;
                 case "ciph":
@@ -154,8 +162,16 @@ class HCAInfo {
         let _a = this.compParam[4] - this.compParam[5] - this.compParam[6];
         let _b = this.compParam[7];
         this.compParam[8] = _b > 0 ? _a / _b + (_a % _b ? 1 : 0) : 0;
+        // calculate sample count/offsets
+        this.fullSampleCount = this.format.blockCount * 0x400;
+        this.startAtSample = this.format.droppedHeader;
+        this.endAtSample = this.fullSampleCount - this.format.droppedFooter;
+        if (this.hasHeader["loop"]) {
+            this.loopStartAtSample = this.loop.start * 0x400 + this.loop.droppedHeader;
+            this.loopEndAtSample = (this.loop.end + 1) * 0x400 - this.loop.droppedFooter;
+        }
         if (changeMask || hasModDone) {
-            // fix checksum
+            // fix checksum if requested
             HCACrc16.fix(hca, this.dataOffset - 2);
         }
         let rawHeader = hca.slice(0, this.dataOffset);
@@ -166,15 +182,28 @@ class HCAInfo {
     private checkValidity(): void {
         const results: Array<boolean> = [
             this.blockSize > 0,
-            0 <= this.loop.start,
-            this.loop.start < this.loop.end,
-            this.loop.end <= this.format.blockCount,
+            0 < this.format.blockCount,
+            0 <= this.startAtSample,
+            this.startAtSample < this.endAtSample,
+            this.endAtSample <= this.fullSampleCount,
         ];
         results.find((result, index) => {
             if (!result) {
-                throw new Error(`did not pass check on rule ${index}`);
+                throw new Error(`did not pass normal check on rule ${index}`);
             }
         });
+        if (this.hasHeader["loop"]) {
+            const loopChecks: Array<boolean> = [
+                this.startAtSample <= this.loopStartAtSample,
+                this.loopStartAtSample < this.loopEndAtSample,
+                this.loopEndAtSample <= this.endAtSample,
+            ];
+            loopChecks.find((result, index) => {
+                if (!result) {
+                    throw new Error(`did not pass loop check on rule ${index}`);
+                }
+            });
+        }
     }
     private isHeaderChanged(hca: Uint8Array): boolean {
         if (hca.length >= this.rawHeader.length) {
@@ -332,7 +361,9 @@ class HCA {
         else if (volume < 0) volume = 0;
         let state = new HCAInternalState(hca); // throws "Not a HCA file" if mismatch
         let info = state.info;
-        if (info.hasHeader["ciph"] && info.cipher != 0) throw new Error("HCA is encrypted, please decrypt it first before decoding");
+        if (info.hasHeader["ciph"] && info.cipher != 0) {
+            throw new Error("HCA is encrypted, please decrypt it first before decoding");
+        }
         let wavRiff = {
             id: 0x46464952, // RIFF
             size: 0,
@@ -378,61 +409,21 @@ class HCA {
             id: 0x61746164, // data
             size: 0
         }
-        // I see "※計算方法不明" here:
-        // https://github.com/Nyagamon/HCADecoder/blob/e26b4d3a8bb450224ede3527d522c0330f7bf02b/clHCA.cpp#L556
-        // so ... I don't know how to handle this either.
-        // However this "smpl" header section seems to be unrecognized so it shouldn't matter.
-        // if (loop) {
-            smpl.samplePeriod = (1 / fmt.fmtSamplingRate * 1000000000);
-            smpl.loop_Start = info.loop.start * 0x80 * 8 + info.format.muteHeader;
-            smpl.loop_End = (info.loop.end + 1) * 0x80 * 8 - 1;
-            smpl.loop_PlayCount = (info.loop.count == 0x80) ? 0 : info.loop.count;
-        // } else {
-        //     smpl.loop_Start = 0;
-        //     smpl.loop_End = (info.format.blockCount + 1) * 0x80 * 8 - 1;
-        //     info.loop.start = 0;
-        //     info.loop.end = info.format.blockCount;
-        // }
+        smpl.samplePeriod = (1 / fmt.fmtSamplingRate * 1000000000);
+        if (info.hasHeader["loop"]) {
+            smpl.loop_Start = info.loopStartAtSample - info.startAtSample;
+            smpl.loop_End = info.loopEndAtSample - info.startAtSample;
+            smpl.SMPTEOffset = 1;
+        }
         if (info.comment) {
             note.size = 4 + info.comment.length;
             if (note.size & 3) note.size += 4 - note.size & 3
         }
-        // Assuming each block in HCA has 0x400 samples, calculate corresponding size in WAV file
         let blockSizeInWav = 0x400 * fmt.fmtSamplingSize;
-        // It's so strange that how a value calculated by ※計算方法不明 method could still be used here!?
-        // I'll just comment it out & rewrite it.
-        //data.size = info.format.blockCount * 0x400 * fmt.fmtSamplingSize + (smpl.loop_End - smpl.loop_Start) * loop
-        data.size = info.format.blockCount * blockSizeInWav;
-        // Calculate mute header/footer sizes and offsets in wav file - I'm not sure whether it's correct either.
-        // Won't affect wav file size if no loop audio clip appended.
-        let muteHeaderOffsetInWavData = info.format.muteHeader * fmt.fmtSamplingSize;
-        let muteFooterOffsetInWavData = info.format.blockCount * blockSizeInWav - info.format.muteFooter * fmt.fmtSamplingSize;
-        let loopStartOffsetInWavData = 0, loopEndOffsetInWavData = 0, loopSizeInWav = 0;
-        if (info.hasHeader["loop"] && loop) {
-            // The file is marked as loop-able AND loop is ENABLED
-            if (info.loop.start > info.loop.end || info.loop.start < 0 || info.loop.end >= info.format.blockCount)
-                throw new Error("invalid loop start/end block index");
-            // Calculate loop start/end in wav data part - just like above, not sure whether it's correct.
-            loopStartOffsetInWavData = info.loop.start * blockSizeInWav;
-            /* Haven't seen any evidence about what mute header/footer means, comment out for now.
-            if (loopStartOffsetInWavData < muteHeaderOffsetInWavData) {
-                loopStartOffsetInWavData = muteHeaderOffsetInWavData; //truncate to muteHeader
-            }
-            */
-            // Once thought the loop end block should also be included, maybe that's incorrect.
-            loopEndOffsetInWavData = info.loop.end * blockSizeInWav;
-            /* Same as above, comment out.
-            if (loopEndOffsetInWavData > muteFooterOffsetInWavData) {
-                loopEndOffsetInWavData = muteFooterOffsetInWavData; // truncate to muteFooter
-            }
-            */
-            loopSizeInWav = loopEndOffsetInWavData - loopStartOffsetInWavData;
-            // Add size of appended looping audio clips
-            data.size += loopSizeInWav * loop;
-        }
-        // Note: I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
-        // I think the wav is already looping - just finitely, so maybe such metadata is not needed?
-        wavRiff.size = 0x1C + ((info.hasHeader["loop"] && !loop) ? 68 : 0) + (info.comment ? 8 + note.size : 0) + 8 + data.size;
+        data.size = info.hasHeader["loop"]
+            ? ((info.loopStartAtSample - info.startAtSample) + (info.loopEndAtSample - info.loopStartAtSample) * (loop + 1)) * fmt.fmtSamplingSize
+            : (info.endAtSample - info.startAtSample) * fmt.fmtSamplingSize;
+        wavRiff.size = 0x1C + (info.comment ? 8 + note.size : 0) + 8 + data.size + (info.hasHeader["loop"] ? 68 : 0);
         let writer = new Uint8Array(wavRiff.size + 8);
         let p = new DataView(writer.buffer);
         let ftell = 0;
@@ -447,9 +438,61 @@ class HCA {
         p.setUint32(28, fmt.fmtSamplesPerSec, true);
         p.setUint16(32, fmt.fmtSamplingSize, true);
         p.setUint16(34, fmt.fmtBitCount, true);
-        ftell = 36;
-        if (info.hasHeader["loop"] && !loop) {
-            // Note: same as above, I WON'T let the unrecognized smpl header section appear when loop is ENABLED.
+        ftell += 36;
+        if (info.comment) {
+            p.setUint32(ftell, note.id, true);
+            p.setUint32(ftell + 4, note.size, true);
+            let te = new TextEncoder();
+            writer.set(te.encode(info.comment), ftell + 8);
+            ftell += note.size;
+        }
+        p.setUint32(ftell, data.id, true);
+        p.setUint32(ftell + 4, data.size, true);
+        ftell += 8;
+        let actualEndAtSample = info.hasHeader["loop"] ? info.loopEndAtSample : info.endAtSample;
+        for (let l = 0; l < info.format.blockCount; ++l) {
+            let lastDecodedSamples = l * 0x400;
+            let currentDecodedSamples = lastDecodedSamples + 0x400;
+            if (currentDecodedSamples <= info.startAtSample || lastDecodedSamples >= actualEndAtSample) {
+                continue;
+            }
+            let startOffset = info.dataOffset + info.blockSize * l;
+            let block = hca.subarray(startOffset, startOffset + info.blockSize);
+            this.decodeBlock(state, block, mode);
+            let wavebuff: Uint8Array;
+            if (lastDecodedSamples < info.startAtSample || currentDecodedSamples > actualEndAtSample) {
+                // crossing startAtSample/endAtSample, skip/drop specified bytes
+                wavebuff = this.writeToPCM(state, mode, volume);
+                if (lastDecodedSamples < info.startAtSample) {
+                    let skippedSize = (info.startAtSample - lastDecodedSamples) * fmt.fmtSamplingSize;
+                    wavebuff = wavebuff.subarray(skippedSize, blockSizeInWav);
+                } else if (currentDecodedSamples > actualEndAtSample) {
+                    let writeSize = (actualEndAtSample - lastDecodedSamples) * fmt.fmtSamplingSize;
+                    wavebuff = wavebuff.subarray(0, writeSize);
+                } else throw Error("should never go here");
+                writer.set(wavebuff, ftell);
+            } else {
+                wavebuff = this.writeToPCM(state, mode, volume, writer, ftell);
+            }
+            ftell += wavebuff.byteLength;
+        }
+        // decoding done, then just copy looping part
+        if (info.hasHeader["loop"] && loop) {
+            // "tail" beyond loop end is dropped
+            // copy looping audio clips
+            let wavDataOffset = writer.byteLength - data.size - 68;
+            let loopSizeInWav = (info.loopEndAtSample - info.loopStartAtSample) * fmt.fmtSamplingSize;
+            let preLoopSizeInWav = (info.loopStartAtSample - info.startAtSample) * fmt.fmtSamplingSize;
+            let loopStartOffsetInWav = wavDataOffset + preLoopSizeInWav;
+            let src = new Uint8Array(writer.buffer, writer.byteOffset + loopStartOffsetInWav, loopSizeInWav);
+            for (let i = 1; i <= loop; i++) {
+                let dst = new Uint8Array(writer.buffer, writer.byteOffset + loopStartOffsetInWav + i * loopSizeInWav, loopSizeInWav);
+                dst.set(src);
+                ftell += dst.byteLength;
+            }
+        }
+        if (info.hasHeader["loop"]) {
+            // write smpl section
             p.setUint32(ftell, smpl.id, true);
             p.setUint32(ftell + 4, smpl.size, true);
             p.setUint32(ftell + 8, smpl.manufacturer, true);
@@ -468,62 +511,6 @@ class HCA {
             p.setUint32(ftell + 60, smpl.loop_Fraction, true);
             p.setUint32(ftell + 64, smpl.loop_PlayCount, true);
             ftell += 68;
-        }
-        if (info.comment) {
-            p.setUint32(ftell, note.id, true);
-            p.setUint32(ftell + 4, note.size, true);
-            let te = new TextEncoder();
-            writer.set(te.encode(info.comment), ftell + 8);
-            ftell += note.size;
-        }
-        p.setUint32(ftell, data.id, true);
-        p.setUint32(ftell + 4, data.size, true);
-        ftell += 8;
-        let stateAtLoopEnd: HCAInternalState | undefined;
-        for (let l = 0; l < info.format.blockCount; ++l) {
-            let startOffset = info.dataOffset + info.blockSize * l;
-            let block = hca.subarray(startOffset, startOffset + info.blockSize);
-            this.decodeBlock(state, block, mode);
-            let wavebuff = this.writeToPCM(state, mode, volume, writer, ftell);
-            ftell += wavebuff.length;
-            if (info.hasHeader["loop"] && loop && l == info.loop.end - 1) {
-                // save the internal state at this moment, in order to rework the "seam"
-                stateAtLoopEnd = state.clone();
-            }
-        }
-        // rework the "seam" if needed
-        let seamBuff: Uint8Array | undefined;
-        if (info.hasHeader["loop"] && loop) {
-            // rewind the internal state
-            if (stateAtLoopEnd == null) throw new Error("stateAtLoopEnd == null");
-            state = stateAtLoopEnd;
-            // re-decode
-            let startOffset = info.dataOffset + info.blockSize * info.loop.start;
-            let block = hca.subarray(startOffset, startOffset + info.blockSize);
-            this.decodeBlock(state, block, mode);
-            seamBuff = this.writeToPCM(state, mode, volume);
-        }
-        // decoding done, then just copy looping part
-        if (info.hasHeader["loop"] && loop) {
-            let wavDataOffset = writer.length - data.size;
-            // copy "tail"
-            let tailSize = info.format.blockCount * blockSizeInWav - loopEndOffsetInWavData;
-            if (tailSize > 0) {
-                let src = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData, tailSize);
-                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + loop * loopSizeInWav, tailSize);
-                dst.set(src);
-            }
-            // copy looping audio clips
-            let src = new Uint8Array(writer.buffer, wavDataOffset + loopStartOffsetInWavData + blockSizeInWav, loopSizeInWav - blockSizeInWav);
-            for (let i = 0; i < loop; i++) {
-                // copy the "seam"
-                let dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav, blockSizeInWav);
-                if (seamBuff == null) throw new Error("seamBuff == null");
-                dst.set(seamBuff);
-                // copy remaining part
-                dst = new Uint8Array(writer.buffer, wavDataOffset + loopEndOffsetInWavData + i * loopSizeInWav + blockSizeInWav, loopSizeInWav - blockSizeInWav);
-                dst.set(src);
-            }
         }
         return writer;
     }
