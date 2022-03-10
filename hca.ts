@@ -982,6 +982,16 @@ class HCAFrame
     AcceptableNoiseLevel: number = 0;
     EvaluationBoundary: number = 0;
 
+    dump(): string {
+        //DEBUG
+        let str = "";
+        str += "Channels =";
+        for (let c of this.Channels) str += c.dump("    ");
+        str += `AthCurve =${HCAChannel.dumpArray("    ", this.AthCurve)}`;
+        str += `AcceptableNoiseLevel = ${this.AcceptableNoiseLevel}\n`;
+        str += `EvaluationBoundary = ${this.EvaluationBoundary}\n`;
+        return str;
+    }
     constructor (hca: HCAInfo)
     {
         this.Hca = hca;
@@ -1080,6 +1090,47 @@ class HCAChannel
             t[key] = values[key];
         }
     }
+    static dumpArray(indent: string, a: any): string {
+        let str = "\n" + indent + "[\n";
+        if (a instanceof Float64Array || a instanceof Uint32Array || a instanceof Int32Array || a instanceof Uint8Array) {
+            for (let e of a) {
+                let e1: string;
+                if (a instanceof Float64Array) {
+                    e1 = e.toFixed(8);
+                } else {
+                    e1 = e.toString();
+                }
+                str += indent + "    " + e1 + ",\n";
+            }
+        }
+        else if (a.buffer == null) {
+            for (let e of a as Array<any>) {
+                str += HCAChannel.dumpArray(indent + "    ", e);
+            }
+        }
+        else throw new Error("a.buffer not null");
+        return str + indent + "]\n";
+    }
+    dump(indent: string): string {
+        //DEBUG
+        let str = "\n" + indent + "{\n";
+        str += indent + "    " + `Type = ${this.Type}\n`;
+        str += indent + "    " + `CodedScaleFactorCount = ${this.CodedScaleFactorCount}\n`;
+        str += indent + "    " + `PcmFloat =${HCAChannel.dumpArray(indent + "    ", this.PcmFloat)}`;
+        str += indent + "    " + `Spectra =${HCAChannel.dumpArray(indent + "    ", this.Spectra)}`;
+        str += indent + "    " + `ScaledSpectra =${HCAChannel.dumpArray(indent + "    ", this.ScaledSpectra)}`;
+        str += indent + "    " + `QuantizedSpectra =${HCAChannel.dumpArray(indent + "    ", this.QuantizedSpectra)}`;
+        str += indent + "    " + `Gain =${HCAChannel.dumpArray(indent + "    ", this.Gain)}`;
+        str += indent + "    " + `Intensity =${HCAChannel.dumpArray(indent + "    ", this.Intensity)}`;
+        str += indent + "    " + `HfrScales =${HCAChannel.dumpArray(indent + "    ", this.HfrScales)}`;
+        str += indent + "    " + `HfrGroupAverageSpectra =${HCAChannel.dumpArray(indent + "    ", this.HfrGroupAverageSpectra)}`;
+        str += indent + "    " + `Mdct: HCAMdct = ${this.Mdct.dump(indent)}`;
+        str += indent + "    " + `ScaleFactors =${HCAChannel.dumpArray(indent + "    ", this.ScaleFactors)}`;
+        str += indent + "    " + `Resolution =${HCAChannel.dumpArray(indent + "    ", this.Resolution)}`;
+        str += indent + "    " + `HeaderLengthBits = ${this.HeaderLengthBits}\n`;
+        str += indent + "    " + `ScaleFactorDeltaBits = ${this.ScaleFactorDeltaBits}\n`
+        return str + indent + "}\n";
+    }
 }
 
 enum HCAChannelType
@@ -1094,10 +1145,16 @@ class HCADecoder
     static DecodeFrame(audio: Uint8Array, frame: HCAFrame): void
     {
         let reader = new HCABitReader(audio);
+        let str = "";
         HCAPacking.UnpackFrame(frame, reader);
+        str += "UnpackFrame\n" + frame.dump();
         this.DequantizeFrame(frame);
+        str += "DequantizeFrame\n" + frame.dump();
         this.RestoreMissingBands(frame);
+        str += "RestoreMissingBands\n" + frame.dump();
         this.RunImdct(frame);
+        str += "RunImdct\n" + frame.dump();
+        console.log(URL.createObjectURL(new Blob([str], {type: "application/octet-stream"})));
     }
 
     private static DequantizeFrame(frame: HCAFrame): void
@@ -1507,6 +1564,23 @@ class HCAMdct
     private readonly _scratchMdct: Float64Array;
     private readonly _scratchDct: Float64Array;
 
+    dump(indent: string): string {
+        let str = "{\n";
+        str += `${indent}    MdctBits = ${this.MdctBits}\n`;
+        str += `${indent}    MdctSize = ${this.MdctSize}\n`;
+        str += `${indent}    Scale = ${this.Scale}\n`;
+
+        str += `${indent}    _tableBits = ${HCAMdct._tableBits}\n`;
+        str += `${indent}    SinTables =${HCAChannel.dumpArray(indent + "    ", HCAMdct.SinTables)}`;
+        str += `${indent}    CosTables =${HCAChannel.dumpArray(indent + "    ", HCAMdct.CosTables)}`;
+        str += `${indent}    ShuffleTables =${HCAChannel.dumpArray(indent + "    ", HCAMdct.ShuffleTables)}`;
+        str += `${indent}    _mdctPrevious =${HCAChannel.dumpArray(indent + "    ", this._mdctPrevious)}`;
+        str += `${indent}    _imdctPrevious =${HCAChannel.dumpArray(indent + "    ", this._imdctPrevious)}`;
+        str += `${indent}    _imdctWindow =${HCAChannel.dumpArray(indent + "    ", this._imdctWindow)}`;
+        str += `${indent}    _scratchMdct =${HCAChannel.dumpArray(indent + "    ", this._scratchMdct)}`;
+        str += `${indent}    _scratchDct =${HCAChannel.dumpArray(indent + "    ", this._scratchDct)}`;
+        return str + indent + "}\n";
+    }
     constructor (mdctBits: number, window: Float64Array, scale = 1)
     {
         HCAMdct.SetTables(mdctBits);
